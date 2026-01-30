@@ -1,0 +1,549 @@
+// Nexora POS Printer Manager - Main UI
+import {
+    Button,
+    ComboBox,
+    LineEdit,
+    ScrollView,
+    VerticalBox,
+    HorizontalBox,
+    GroupBox,
+    CheckBox,
+    StandardButton,
+} from "std-widgets.slint";
+
+// Device structure
+export struct Device {
+    path: string,
+    description: string,
+    type: string,
+}
+
+// Printer status
+export struct PrinterStatus {
+    connected: bool,
+    device-path: string,
+    connection-type: string,
+}
+
+export component MainWindow inherits Window {
+    title: "Nexora Printer Manager";
+    preferred-width: 900px;
+    preferred-height: 700px;
+    min-width: 800px;
+    min-height: 600px;
+    
+    // Callbacks for Rust backend
+    callback scan-devices();
+    callback connect-printer(string, string);
+    callback disconnect-printer();
+    callback test-print();
+    callback save-settings();
+    
+    // Properties
+    in-out property <[Device]> available-devices: [];
+    in-out property <bool> is-connected: false;
+    in-out property <bool> is-loading: false;
+    in-out property <string> status-message: "";
+    in-out property <string> selected-connection-type: "USB";
+    in-out property <string> selected-device: "";
+    
+    // Color scheme - Nexora brand colors
+    property <color> primary-color: #2563eb;
+    property <color> success-color: #16a34a;
+    property <color> danger-color: #dc2626;
+    property <color> warning-color: #ea580c;
+    property <color> bg-color: #f8fafc;
+    property <color> card-bg: #ffffff;
+    property <color> text-primary: #0f172a;
+    property <color> text-secondary: #64748b;
+    property <color> border-color: #e2e8f0;
+    background: bg-color;
+    VerticalBox {
+        padding: 0px;
+        spacing: 0px;
+        
+        // ========== HEADER ==========
+        Rectangle {
+            height: 80px;
+            background: @linear-gradient(135deg, #1e40af 0%, #2563eb 100%);
+            HorizontalBox {
+                padding: 20px;
+                spacing: 15px;
+                
+                // Logo - Nexora branding
+                Image {
+                    source: @image-url("../assets/nexora.png");
+                    width: 140px;
+                    height: 48px;
+                    image-fit: contain;
+                }
+
+                VerticalBox {
+                    alignment: start;
+                    spacing: 2px;
+                    Text {
+                        text: "Printer Manager";
+                        color: white;
+                        font-size: 24px;
+                        font-weight: 700;
+                    }
+
+                    Text {
+                        text: "ESC/POS Setup & Configuration";
+                        color: #93c5fd;
+                        font-size: 13px;
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+                
+                // Status indicator
+                Rectangle {
+                    width: 150px;
+                    height: 40px;
+                    background: is-connected ? success-color : #334155;
+                    border-radius: 20px;
+                    HorizontalBox {
+                        padding: 10px;
+                        spacing: 8px;
+                        Rectangle {
+                            width: 10px;
+                            height: 10px;
+                            background: white;
+                            border-radius: 5px;
+                            animate background {
+                                duration: 1s;
+                                iteration-count: -1;
+                            }
+                        }
+
+                        Text {
+                            text: is-connected ? "Connected" : "Disconnected";
+                            color: white;
+                            font-size: 14px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // ========== MAIN CONTENT ==========
+        HorizontalBox {
+            padding: 0px;
+            spacing: 0px;
+            
+            // Left Panel - Setup
+            Rectangle {
+                width: 450px;
+                background: white;
+                ScrollView {
+                    viewport-width: 450px;
+                    VerticalBox {
+                        padding: 30px;
+                        spacing: 25px;
+                        alignment: start;
+                        
+                        // Connection Type Section
+                        VerticalBox {
+                            spacing: 12px;
+                            Text {
+                                text: "Connection Type";
+                                color: text-primary;
+                                font-size: 16px;
+                                font-weight: 700;
+                            }
+
+                            HorizontalBox {
+                                spacing: 10px;
+                                connection-type-usb := Rectangle {
+                                    width: 120px;
+                                    height: 80px;
+                                    background: selected-connection-type == "USB" ? primary-color : card-bg;
+                                    border-radius: 8px;
+                                    border-width: 2px;
+                                    border-color: selected-connection-type == "USB" ? primary-color : border-color;
+                                    VerticalBox {
+                                        spacing: 5px;
+                                        Text {
+                                            text: "🔌";
+                                            font-size: 24px;
+                                            horizontal-alignment: center;
+                                        }
+
+                                        Text {
+                                            text: "USB";
+                                            color: selected-connection-type == "USB" ? white : text-primary;
+                                            font-size: 14px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                        }
+                                    }
+
+                                    TouchArea {
+                                        clicked => {
+                                            selected-connection-type = "USB";
+                                        }
+                                    }
+                                }
+
+                                connection-type-network := Rectangle {
+                                    width: 120px;
+                                    height: 80px;
+                                    background: selected-connection-type == "Network" ? primary-color : card-bg;
+                                    border-radius: 8px;
+                                    border-width: 2px;
+                                    border-color: selected-connection-type == "Network" ? primary-color : border-color;
+                                    VerticalBox {
+                                        spacing: 5px;
+                                        Text {
+                                            text: "🌐";
+                                            font-size: 24px;
+                                            horizontal-alignment: center;
+                                        }
+
+                                        Text {
+                                            text: "Network";
+                                            color: selected-connection-type == "Network" ? white : text-primary;
+                                            font-size: 14px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                        }
+                                    }
+
+                                    TouchArea {
+                                        clicked => {
+                                            selected-connection-type = "Network";
+                                        }
+                                    }
+                                }
+
+                                connection-type-lpt := Rectangle {
+                                    width: 120px;
+                                    height: 80px;
+                                    background: selected-connection-type == "LPT" ? primary-color : card-bg;
+                                    border-radius: 8px;
+                                    border-width: 2px;
+                                    border-color: selected-connection-type == "LPT" ? primary-color : border-color;
+                                    VerticalBox {
+                                        spacing: 5px;
+                                        Text {
+                                            text: "🖨️";
+                                            font-size: 24px;
+                                            horizontal-alignment: center;
+                                        }
+
+                                        Text {
+                                            text: "LPT";
+                                            color: selected-connection-type == "LPT" ? white : text-primary;
+                                            font-size: 14px;
+                                            font-weight: 600;
+                                            horizontal-alignment: center;
+                                        }
+                                    }
+
+                                    TouchArea {
+                                        clicked => {
+                                            selected-connection-type = "LPT";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Device Selection
+                        VerticalBox {
+                            spacing: 12px;
+                            HorizontalBox {
+                                spacing: 10px;
+                                Text {
+                                    text: "Printer Device";
+                                    color: text-primary;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                }
+
+                                scan-btn := Button {
+                                    text: is-loading ? "Scanning..." : "🔍 Scan";
+                                    enabled: !is-loading && !is-connected;
+                                    primary: true;
+                                    clicked => {
+                                        scan-devices();
+                                    }
+                                }
+                            }
+
+                            device-input := LineEdit {
+                                placeholder-text: selected-connection-type == "Network" ? "Enter IP (e.g., 192.168.1.100)" : selected-connection-type == "LPT" ? "Enter port (e.g., LPT1)" : "Select device or enter path";
+                                text <=> selected-device;
+                                enabled: !is-connected;
+                            }
+                            
+                            // Available devices list
+                            if available-devices.length > 0: VerticalBox {
+                                spacing: 5px;
+                                Text {
+                                    text: "Found Devices:";
+                                    color: text-secondary;
+                                    font-size: 13px;
+                                }
+
+                                for device[index] in available-devices: Rectangle {
+                                    height: 40px;
+                                    background: selected-device == device.path ? #eff6ff : white;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: selected-device == device.path ? primary-color : border-color;
+                                    HorizontalBox {
+                                        padding: 10px;
+                                        spacing: 10px;
+                                        Text {
+                                            text: device.type == "USB" ? "🔌" : device.type == "Network" ? "🌐" : "🖨️";
+                                            font-size: 16px;
+                                            vertical-alignment: center;
+                                        }
+
+                                        VerticalBox {
+                                            spacing: 2px;
+                                            Text {
+                                                text: device.path;
+                                                color: text-primary;
+                                                font-size: 13px;
+                                                font-weight: 600;
+                                            }
+
+                                            Text {
+                                                text: device.description;
+                                                color: text-secondary;
+                                                font-size: 11px;
+                                            }
+                                        }
+                                    }
+
+                                    TouchArea {
+                                        clicked => {
+                                            selected-device = device.path;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Connection Buttons
+                        HorizontalBox {
+                            spacing: 10px;
+                            if !is-connected: Button {
+                                text: "Connect Printer";
+                                primary: true;
+                                enabled: selected-device != "" && !is-loading;
+                                clicked => {
+                                    connect-printer(selected-connection-type, selected-device);
+                                }
+                            }
+                            if is-connected: Button {
+                                text: "Disconnect";
+                                clicked => {
+                                    disconnect-printer();
+                                }
+                            }
+                            Button {
+                                text: "Save Settings";
+                                enabled: !is-loading;
+                                clicked => {
+                                    save-settings();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Right Panel - Info & Testing
+            Rectangle {
+                background: bg-color;
+                VerticalBox {
+                    padding: 30px;
+                    spacing: 25px;
+                
+                // Status Card
+                Rectangle {
+                        height: 180px;
+                        background: card-bg;
+                        border-radius: 12px;
+                        drop-shadow-blur: 10px;
+                        drop-shadow-color: #0000000d;
+                        VerticalBox {
+                            padding: 25px;
+                            spacing: 15px;
+                            Text {
+                                text: "Printer Status";
+                                color: text-primary;
+                                font-size: 18px;
+                                font-weight: 700;
+                            }
+
+                            HorizontalBox {
+                                spacing: 10px;
+                                Rectangle {
+                                    width: 12px;
+                                    height: 12px;
+                                    background: is-connected ? success-color : text-secondary;
+                                    border-radius: 6px;
+                                    y: 5px;
+                                }
+
+                                Text {
+                                    text: is-connected ? "Printer is ready" : "No printer connected";
+                                    color: text-secondary;
+                                    font-size: 14px;
+                                }
+                            }
+
+                            if is-connected: VerticalBox {
+                                spacing: 8px;
+                                HorizontalBox {
+                                    Text {
+                                        text: "Device:";
+                                        color: text-secondary;
+                                        font-size: 13px;
+                                        width: 80px;
+                                    }
+
+                                    Text {
+                                        text: selected-device;
+                                        color: text-primary;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                    }
+                                }
+
+                                HorizontalBox {
+                                    Text {
+                                        text: "Type:";
+                                        color: text-secondary;
+                                        font-size: 13px;
+                                        width: 80px;
+                                    }
+
+                                    Text {
+                                        text: selected-connection-type;
+                                        color: text-primary;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                
+                // Test Print Card
+                Rectangle {
+                        height: 160px;
+                        background: card-bg;
+                        border-radius: 12px;
+                        drop-shadow-blur: 10px;
+                        drop-shadow-color: #0000000d;
+                        VerticalBox {
+                            padding: 25px;
+                            spacing: 15px;
+                            Text {
+                                text: "Test Printing";
+                                color: text-primary;
+                                font-size: 18px;
+                                font-weight: 700;
+                            }
+
+                            Text {
+                                text: "Send a test page to verify your printer is working correctly.";
+                                color: text-secondary;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+
+                            Button {
+                                text: "🖨️ Print Test Page";
+                                enabled: is-connected && !is-loading;
+                                primary: true;
+                                clicked => {
+                                    test-print();
+                                }
+                            }
+                        }
+                    }
+                
+                // Info Card
+                Rectangle {
+                        background: @linear-gradient(135deg, #dbeafe 0%, #eff6ff 100%);
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: #bfdbfe;
+                        VerticalBox {
+                            padding: 20px;
+                            spacing: 10px;
+                            Text {
+                                text: "ℹ️ Supported Printers";
+                                color: primary-color;
+                                font-size: 15px;
+                                font-weight: 700;
+                            }
+
+                            Text {
+                                text: "• Epson TM-T88 Series\n• Star TSP143/654\n• Any ESC/POS compatible printer\n• USB, Network (Ethernet), and LPT ports";
+                                color: #1e40af;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                
+                // Status Message
+                if status-message != "": Rectangle {
+                        height: 60px;
+                        background: status-message == "✓ Printer connected successfully!" || status-message == "✓ Test page printed successfully!" || status-message == "✓ Settings saved successfully!" ? #dcfce7 : (status-message == "✗ Print failed: Failed to write to printer") ? #fee2e2 : #fef3c7;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: status-message == "✓ Printer connected successfully!" || status-message == "✓ Test page printed successfully!" || status-message == "✓ Settings saved successfully!" ? #86efac : (status-message == "✗ Print failed: Failed to write to printer") ? #fca5a5 : #fde047;
+                        HorizontalBox {
+                            padding: 15px;
+                            spacing: 10px;
+                            Text {
+                                text: status-message == "✓ Printer connected successfully!" || status-message == "✓ Test page printed successfully!" || status-message == "✓ Settings saved successfully!" ? "✓" : (status-message == "✗ Print failed: Failed to write to printer") ? "✗" : "ⓘ";
+                                color: status-message == "✓ Printer connected successfully!" || status-message == "✓ Test page printed successfully!" || status-message == "✓ Settings saved successfully!" ? #16a34a : (status-message == "✗ Print failed: Failed to write to printer") ? #dc2626 : #ea580c;
+                                font-size: 18px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+
+                            Text {
+                                text: status-message;
+                                color: status-message == "✓ Printer connected successfully!" || status-message == "✓ Test page printed successfully!" || status-message == "✓ Settings saved successfully!" ? #166534 : (status-message == "✗ Print failed: Failed to write to printer") ? #991b1b : #9a3412;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                    }
+                
+                // Footer
+                Text {
+                        text: "Nexora POS v1.0.0 • Printer Manager";
+                        color: text-secondary;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
