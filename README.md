@@ -1,7 +1,7 @@
 # Nexora Printer Manager
 
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-blue.svg)](https://www.rust-lang.org)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
 
 **Nexora Printer Manager** is a high-performance desktop application designed to bridge web-based POS systems with local ESC/POS thermal printers. It provides a robust HTTP API and a user-friendly interface for managing USB, Network, and LPT printer connections.
 
@@ -70,8 +70,18 @@ For detailed information on how to use the application, configure templates, and
 
 ---
 
+## 🛡️ Patent & Modification Protection
+
+This project is licensed under the **GNU GPLv3**. This was chosen specifically to protect the community:
+
+- **No Patent Traps**: By using or contributing to this software, contributors grant a royalty-free patent license to all users. Anyone attempting to enforce patent litigation against this software forfeits their right to use it.
+
+- **Mandatory Reciprocity**: Any company or individual that modifies this manager and distributes it must share their source code modifications with the public. We believe in keeping printer hardware accessible and open.
+
+---
+
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GPL-3.0-only License - see the [LICENSE](LICENSE) file for details.
 
 © 2026 Nexora POS Team

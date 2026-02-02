@@ -3,7 +3,7 @@ name = "nexora-printer-manager"
 version = "1.0.0"
 description = "Nexora POS Printer Manager - Professional ESC/POS printer setup and management"
 authors = ["Nexora Team"]
-license = "MIT"
+license = "GPL-3.0-only"
 edition = "2021"
 
 [dependencies]

@@ -1,5 +1,7 @@
-// Nexora POS Printer Manager
-// Complete ESC/POS printer management with USB, Network, and LPT support
+// Copyright (C) 2026 [Nexora]
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License.
 
 #![windows_subsystem = "windows"]
 
