@@ -389,7 +389,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     env_logger::init();
 
-    log::info!("Starting Nexora Printer Manager v1.0.0");
+    log::info!(
+        "Starting Nexora Printer Manager v{}",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Create printer manager
     let printer_manager = Arc::new(Mutex::new(PrinterManager::new()));
