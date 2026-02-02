@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::{PrinterManager, ReceiptData, ReceiptTemplate};
+use crate::{PrinterManager, ReceiptData, ReceiptTemplate, TemplateRenderer};
 
 // ==================== Request/Response Types ====================
 
@@ -72,6 +72,19 @@ pub struct StatusResponse {
     pub cached_templates: usize,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PreviewTemplateRequest {
+    pub template: ReceiptTemplate,
+    pub data: ReceiptData,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PreviewResponse {
+    pub success: bool,
+    pub commands: Vec<String>,
+    pub text_preview: String,
+}
+
 // ==================== App State ====================
 
 pub struct AppState {
@@ -128,6 +141,7 @@ async fn print_legacy(
                 quantity: item.quantity,
                 price: item.price,
                 total: item.quantity as f64 * item.price,
+                modifiers: None,
             })
             .collect(),
         subtotal: request.subtotal,
@@ -141,6 +155,7 @@ async fn print_legacy(
         footer_message: None,
         receipt_url: None,
         custom: std::collections::HashMap::new(),
+        ..Default::default()
     };
 
     match manager.print_with_template(&data) {
@@ -323,12 +338,14 @@ async fn test_print(State(state): State<Arc<AppState>>) -> Result<Json<ApiRespon
                 quantity: 2,
                 price: 10.00,
                 total: 20.00,
+                modifiers: None,
             },
             crate::ReceiptItem {
                 name: "Test Item 2".to_string(),
                 quantity: 1,
                 price: 15.50,
                 total: 15.50,
+                modifiers: None,
             },
         ],
         subtotal: 35.50,
@@ -342,6 +359,7 @@ async fn test_print(State(state): State<Arc<AppState>>) -> Result<Json<ApiRespon
         footer_message: Some("This is a test receipt".to_string()),
         receipt_url: None,
         custom: std::collections::HashMap::new(),
+        ..Default::default()
     };
 
     match manager.print_with_template(&test_data) {
@@ -354,6 +372,55 @@ async fn test_print(State(state): State<Arc<AppState>>) -> Result<Json<ApiRespon
             Ok(Json(ApiResponse {
                 success: false,
                 message: format!("Test print failed: {}", e),
+            }))
+        }
+    }
+}
+
+/// Preview template rendering (no printer needed)
+/// This endpoint renders a template with data and returns the print commands
+/// and a text preview - useful for testing templates
+async fn preview_template(
+    Json(request): Json<PreviewTemplateRequest>,
+) -> Result<Json<PreviewResponse>, StatusCode> {
+    let paper_width = request.template.paper_width.unwrap_or(48);
+    let renderer = TemplateRenderer::new(paper_width);
+
+    match renderer.render_to_commands(&request.template, &request.data) {
+        Ok(commands) => {
+            // Convert commands to string representations
+            let command_strings: Vec<String> =
+                commands.iter().map(|cmd| format!("{:?}", cmd)).collect();
+
+            // Build text preview from commands
+            let mut text_preview = String::new();
+            for cmd in &commands {
+                match cmd {
+                    crate::template_render::PrintCommand::WriteLine(s) => {
+                        text_preview.push_str(s);
+                        text_preview.push('\n');
+                    }
+                    crate::template_render::PrintCommand::Feed(n) => {
+                        for _ in 0..*n {
+                            text_preview.push('\n');
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Ok(Json(PreviewResponse {
+                success: true,
+                commands: command_strings,
+                text_preview,
+            }))
+        }
+        Err(e) => {
+            log::error!("Template preview failed: {}", e);
+            Ok(Json(PreviewResponse {
+                success: false,
+                commands: vec![],
+                text_preview: format!("Error: {}", e),
             }))
         }
     }
@@ -388,6 +455,8 @@ pub async fn start_server(
         // Template-based printing
         .route("/print-template", post(print_with_template))
         .route("/test-print", post(test_print))
+        // Preview (no printer needed)
+        .route("/preview-template", post(preview_template))
         // Cache management
         .route("/cache", delete(clear_cache))
         .layer(cors)
