@@ -59,16 +59,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           name: Nexora Printer Manager ${{ github.ref_name }}
-          body: |
-            ## Nexora Printer Manager ${{ github.ref_name }}
-            
-            **Downloads:**
-            - `nexora-printer-manager.exe` - Windows x64 executable
-            
-            ### Installation
-            1. Download `nexora-printer-manager.exe`
-            2. Run the application
-            3. The HTTP server starts on port 8080
+          body_path: RELEASE_NOTES.md
           files: ./artifacts/nexora-printer-manager.exe
           draft: false
           prerelease: false

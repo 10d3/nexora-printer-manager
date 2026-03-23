@@ -3,15 +3,21 @@
 // it under the terms of the GNU General Public License as published by
 // the Free Software Foundation, either version 3 of the License.
 
-#![windows_subsystem = "windows"]
+// #![windows_subsystem = "windows"]
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use serde::{Deserialize, Serialize};
 use slint::Model;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+mod autostart;
 mod http_server;
 mod template_render;
+mod tray;
+
+use autostart::Autostart;
+use tray::Tray;
 
 pub use template_render::{ReceiptData, ReceiptItem, ReceiptTemplate, TemplateRenderer};
 
@@ -394,11 +400,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         env!("CARGO_PKG_VERSION")
     );
 
+    // Start hidden when launched by the OS at login
+    let start_minimized = std::env::args().any(|a| a == "--minimized");
+
     // Create printer manager
     let printer_manager = Arc::new(Mutex::new(PrinterManager::new()));
 
+    let autostart = Autostart::new();
+    let tray = Tray::new(autostart.is_enabled());
+    let menu_channel = Tray::event_receiver();
+
     // Create UI
     let ui = MainWindow::new()?;
+
+    {
+        let ui_handle = ui.as_weak();
+        ui.window().on_close_requested(move || {
+            if let Some(ui) = ui_handle.upgrade() {
+                ui.window().hide().unwrap();
+            }
+            slint::CloseRequestResponse::KeepWindowShown
+        });
+    }
+
+    if start_minimized {
+        ui.window().hide()?;
+    }
 
     // Start HTTP server
     let printer_manager_clone = Arc::clone(&printer_manager);
@@ -416,6 +443,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_selected_device(config.device_path.clone().into());
         ui.set_status_message("Configuration loaded successfully".into());
         log::info!("Loaded saved configuration");
+    }
+
+    // ── Tray event polling ─────────────────────────────────────────────────────
+    {
+        let ui_handle = ui.as_weak();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(100),
+            move || {
+                while let Ok(event) = menu_channel.try_recv() {
+                    let Some(ui) = ui_handle.upgrade() else {
+                        return;
+                    };
+
+                    if event.id == tray.ids.show {
+                        ui.window().show().unwrap();
+                    } else if event.id == tray.ids.toggle_autostart {
+                        match autostart.toggle() {
+                            Ok(true) => ui.set_status_message("Launch at startup enabled".into()),
+                            Ok(false) => ui.set_status_message("Launch at startup disabled".into()),
+                            Err(e) => ui.set_status_message(format!("✗ {}", e).into()),
+                        }
+                    } else if event.id == tray.ids.quit {
+                        slint::quit_event_loop().unwrap();
+                    }
+                }
+            },
+        );
+        std::mem::forget(timer); // keep alive past this scope
     }
 
     // Scan devices callback
