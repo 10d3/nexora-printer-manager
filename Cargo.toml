@@ -1,6 +1,6 @@
 [package]
 name = "nexora-printer-manager"
-version = "1.2.2"
+version = "1.2.3"
 description = "Nexora POS Printer Manager - Professional ESC/POS printer setup and management"
 authors = ["Nexora Team"]
 license = "GPL-3.0-only"
@@ -64,4 +64,3 @@ lto = true        # Link-time optimization
 codegen-units = 1 # Better optimization
 strip = true      # Strip symbols
 panic = "abort"   # Smaller binary
-
