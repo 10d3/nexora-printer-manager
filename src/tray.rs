@@ -57,13 +57,13 @@ impl Tray {
     }
 
     /// Returns the channel to poll for menu click events.
-    pub fn event_receiver() -> &'static std::sync::mpsc::Receiver<MenuEvent> {
+    pub fn event_receiver() -> &'static crossbeam_channel::Receiver<MenuEvent> {
         MenuEvent::receiver()
     }
 }
 
 fn load_icon() -> tray_icon::Icon {
-    let bytes = include_bytes!("../assets/icon.png");
+    let bytes = include_bytes!("../assets/favicon.ico");
     let img = image::load_from_memory(bytes).expect("Failed to load tray icon");
     let (w, h) = image::GenericImageView::dimensions(&img);
     let rgba = img.into_rgba8().into_raw();

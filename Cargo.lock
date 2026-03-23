@@ -3520,12 +3520,13 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nexora-printer-manager"
-version = "1.1.0"
+version = "1.2.2"
 dependencies = [
  "anyhow",
  "auto-launch",
  "axum",
  "chrono",
+ "crossbeam-channel",
  "directories",
  "env_logger",
  "escpos",
