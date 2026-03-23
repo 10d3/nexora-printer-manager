@@ -1,6 +1,6 @@
 [package]
 name = "nexora-printer-manager"
-version = "1.2.0"
+version = "1.2.1"
 description = "Nexora POS Printer Manager - Professional ESC/POS printer setup and management"
 authors = ["Nexora Team"]
 license = "GPL-3.0-only"
@@ -64,5 +64,3 @@ codegen-units = 1 # Better optimization
 strip = true      # Strip symbols
 panic = "abort"   # Smaller binary
 
-[target.'cfg(windows)'.dependencies]
-windows-subsystem = { version = "0.1" }
