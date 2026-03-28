@@ -1,25 +1,18 @@
-// Copyright (C) 2026 [Nexora]
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License.
+// Nexora POS Printer Manager
+// Complete ESC/POS printer management with USB, Network, and LPT support
 
-// #![windows_subsystem = "windows"]
-#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+#![windows_subsystem = "windows"]
 
 use serde::{Deserialize, Serialize};
-use slint::Model;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use slint::Model;
 
-mod autostart;
 mod http_server;
 mod template_render;
-mod tray;
 
-use autostart::Autostart;
-use tray::Tray;
-
-pub use template_render::{ReceiptData, ReceiptItem, ReceiptTemplate, TemplateRenderer};
+pub use template_render::{
+    Element, ReceiptData, ReceiptItem, ReceiptTemplate, Section, TemplateLayout, TemplateRenderer,
+};
 
 slint::include_modules!();
 
@@ -29,6 +22,9 @@ slint::include_modules!();
 struct PrinterConfig {
     connection_type: String,
     device_path: String,
+    store_name: String,
+    store_address: String,
+    footer_message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,15 +52,17 @@ struct Receipt {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum PrinterConnection {
-    USB(String),     // port name
+    USB(String),     // port name (COMx or \\.\usbxxx)
     Network(String), // IP:port
+    LPT(String),     // LPTx
+    System(String),  // Windows Printer Name (e.g., "POS-80")
     Console,
 }
 
 pub struct PrinterManager {
     connection: Option<PrinterConnection>,
-    config: Option<PrinterConfig>,
-    pub template_cache: HashMap<String, ReceiptTemplate>,
+    pub config: Option<PrinterConfig>,
+    pub template_cache: std::collections::HashMap<String, ReceiptTemplate>,
     pub active_template_id: Option<String>,
 }
 
@@ -73,31 +71,77 @@ impl PrinterManager {
         Self {
             connection: None,
             config: None,
-            template_cache: HashMap::new(),
+            template_cache: std::collections::HashMap::new(),
             active_template_id: None,
         }
     }
 
-    pub(crate) fn connect(&mut self, config: PrinterConfig) -> Result<(), String> {
-        log::info!(
-            "Connecting to {} printer at {}",
-            config.connection_type,
-            config.device_path
-        );
+    pub fn connect(&mut self, config: PrinterConfig) -> Result<(), String> {
+        log::info!("Connecting to {} printer at {}", config.connection_type, config.device_path);
 
         match config.connection_type.as_str() {
             "USB" => {
-                // Validate port exists
-                self.connection = Some(PrinterConnection::USB(config.device_path.clone()));
+                // Check if this looks like a port or a printer name
+                if config.device_path.starts_with(r"\\.\") || config.device_path.starts_with("COM") {
+                    // It's a port path
+                    #[cfg(target_os = "windows")]
+                    {
+                        // ... existing port opening logic ...
+                        let mut wide: Vec<u16> = config.device_path.encode_utf16().collect();
+                        wide.push(0);
+
+                        const GENERIC_WRITE: u32 = 0x40000000;
+                        use windows_sys::Win32::Storage::FileSystem::{
+                            CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL,
+                        };
+                        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+
+                        let handle = unsafe {
+                            CreateFileW(
+                                wide.as_ptr(),
+                                GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                std::ptr::null(),
+                                OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL,
+                                std::ptr::null_mut(),
+                            )
+                        };
+
+                        if handle == INVALID_HANDLE_VALUE {
+                            let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+                            // If port fails, try to see if it's actually a system printer name
+                            self.connection = Some(PrinterConnection::System(config.device_path.clone()));
+                        } else {
+                            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+                            self.connection = Some(PrinterConnection::USB(config.device_path.clone()));
+                        }
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        self.connection = Some(PrinterConnection::USB(config.device_path.clone()));
+                    }
+                } else {
+                    // It's likely a Windows printer name (e.g. "POS-80")
+                    self.connection = Some(PrinterConnection::System(config.device_path.clone()));
+                }
             }
             "Network" => {
-                // Validate IP is reachable
-                self.connection = Some(PrinterConnection::Network(config.device_path.clone()));
+                // Validate IP:Port format
+                if !config.device_path.contains(':') {
+                    // Try to append default port if missing
+                    let mut path = config.device_path.clone();
+                    path.push_str(":9100");
+                    self.connection = Some(PrinterConnection::Network(path));
+                } else {
+                    self.connection = Some(PrinterConnection::Network(config.device_path.clone()));
+                }
             }
             "LPT" => {
                 #[cfg(target_os = "windows")]
                 {
-                    self.connection = Some(PrinterConnection::USB(config.device_path.clone()));
+                    self.connection = Some(PrinterConnection::LPT(config.device_path.clone()));
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
@@ -107,12 +151,7 @@ impl PrinterManager {
             "Console" => {
                 self.connection = Some(PrinterConnection::Console);
             }
-            _ => {
-                return Err(format!(
-                    "Unsupported connection type: {}",
-                    config.connection_type
-                ))
-            }
+            _ => return Err(format!("Unsupported connection type: {}", config.connection_type)),
         };
 
         self.config = Some(config);
@@ -136,151 +175,355 @@ impl PrinterManager {
         Ok(())
     }
 
-    pub fn get_active_template(&self) -> Option<&ReceiptTemplate> {
-        self.active_template_id
-            .as_ref()
-            .and_then(|id| self.template_cache.get(id))
+    pub fn print_with_template(&mut self, data: &ReceiptData) -> Result<(), String> {
+        let template_id = self.active_template_id.as_ref().ok_or("No active template set")?;
+        let template = self.template_cache.get(template_id).ok_or("Template not found in cache")?;
+
+        let paper_width = template.paper_width.unwrap_or(48);
+        let renderer = TemplateRenderer::new(paper_width);
+        let commands = renderer.render_to_commands(template, data)?;
+
+        self.execute_commands(commands)
     }
 
-    pub fn print_with_template(&mut self, data: &ReceiptData) -> Result<(), String> {
-        let _connection = self.connection.as_ref().ok_or("Printer not connected")?;
-        let template = self.get_active_template().ok_or("No active template set")?;
+    fn execute_commands(&self, commands: Vec<template_render::PrintCommand>) -> Result<(), String> {
+        let connection = self.connection.as_ref().ok_or("Printer not connected")?;
 
-        // For now, just log what we would print
-        log::info!(
-            "Would print receipt using template '{}' for order #{}",
-            template.name,
-            data.order_id
-        );
+        // Convert commands to raw ESC/POS bytes
+        let mut bytes = Vec::new();
+        for cmd in commands {
+            match cmd {
+                template_render::PrintCommand::Init => bytes.extend_from_slice(&[0x1B, 0x40]),
+                template_render::PrintCommand::Write(s) => {
+                    bytes.extend_from_slice(s.as_bytes());
+                }
+                template_render::PrintCommand::WriteLine(s) => {
+                    bytes.extend_from_slice(s.as_bytes());
+                    bytes.push(b'\n');
+                }
+                template_render::PrintCommand::Feed(n) => {
+                    for _ in 0..n {
+                        bytes.push(b'\n');
+                    }
+                }
+                template_render::PrintCommand::Cut => {
+                    bytes.extend_from_slice(&[0x1D, 0x56, 0x01]);
+                }
+                template_render::PrintCommand::Bold(on) => {
+                    bytes.extend_from_slice(&[0x1B, 0x45, if on { 1 } else { 0 }]);
+                }
+                template_render::PrintCommand::Underline(on) => {
+                    bytes.extend_from_slice(&[0x1B, 0x2D, if on { 1 } else { 0 }]);
+                }
+                template_render::PrintCommand::Reverse(on) => {
+                    bytes.extend_from_slice(&[0x1D, 0x42, if on { 1 } else { 0 }]);
+                }
+                template_render::PrintCommand::Size(w, h) => {
+                    let size = ((w.saturating_sub(1) & 0x07) << 4) | (h.saturating_sub(1) & 0x07);
+                    bytes.extend_from_slice(&[0x1D, 0x21, size]);
+                }
+                template_render::PrintCommand::Align(align) => {
+                    let n = match align.to_lowercase().as_str() {
+                        "center" => 1,
+                        "right" => 2,
+                        _ => 0,
+                    };
+                    bytes.extend_from_slice(&[0x1B, 0x61, n]);
+                }
+                template_render::PrintCommand::QRCode { content, size } => {
+                    // Simplified QR code (requires actual implementation for different printers)
+                    log::warn!("QR Code not fully implemented in raw bytes");
+                    bytes.extend_from_slice(format!("[QR: {}]", content).as_bytes());
+                    bytes.push(b'\n');
+                }
+                template_render::PrintCommand::Barcode { content, .. } => {
+                    log::warn!("Barcode not fully implemented in raw bytes");
+                    bytes.extend_from_slice(format!("[Barcode: {}]", content).as_bytes());
+                    bytes.push(b'\n');
+                }
+            }
+        }
 
-        // Build output for console/testing
-        let mut output = String::new();
-        output.push_str(&format!("=== Template: {} ===\n", template.name));
-        output.push_str(&format!("Order: {}\n", data.order_id));
-        output.push_str(&format!("Time: {}\n", data.timestamp));
-        output.push_str(&format!("Items: {} item(s)\n", data.items.len()));
-        output.push_str(&format!("Total: ${:.2}\n", data.total));
-        output.push_str(&format!("Payment: {}\n", data.payment_method));
+        match connection {
+            PrinterConnection::Console => {
+                if let Ok(s) = String::from_utf8(bytes) {
+                    println!("{}", s);
+                }
+                Ok(())
+            }
+            PrinterConnection::USB(path) | PrinterConnection::LPT(path) => {
+                #[cfg(target_os = "windows")]
+                {
+                    self.write_to_device_windows(path, &bytes)
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    use std::io::Write;
+                    let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+                    file.write_all(&bytes).map_err(|e| e.to_string())?;
+                    Ok(())
+                }
+            }
+            PrinterConnection::Network(addr) => {
+                use std::io::Write;
+                let mut stream = std::net::TcpStream::connect(addr).map_err(|e| e.to_string())?;
+                stream.write_all(&bytes).map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            PrinterConnection::System(name) => {
+                #[cfg(target_os = "windows")]
+                {
+                    self.write_to_system_printer_windows(name, &bytes)
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    Err("System printer printing is only supported on Windows.".to_string())
+                }
+            }
+        }
+    }
 
-        println!("{}", output);
+    #[cfg(target_os = "windows")]
+    fn write_to_system_printer_windows(&self, name: &str, data: &[u8]) -> Result<(), String> {
+        use windows_sys::Win32::Graphics::Printing::{
+            OpenPrinterW, ClosePrinter, StartDocPrinterW, EndDocPrinter, 
+            StartPagePrinter, EndPagePrinter, WritePrinter, DOC_INFO_1W,
+            PRINTER_HANDLE
+        };
+        use std::ptr;
+
+        let mut wide_name: Vec<u16> = name.encode_utf16().collect();
+        wide_name.push(0);
+
+        let mut h_printer: PRINTER_HANDLE = unsafe { std::mem::zeroed() };
+        let success = unsafe {
+            OpenPrinterW(wide_name.as_ptr() as *mut u16, &mut h_printer, std::ptr::null_mut())
+        };
+
+        if success == 0 {
+            return Err(format!("Could not open system printer '{}'. Please check the name in Devices and Printers.", name));
+        }
+
+        let doc_name = "Nexora Receipt\0".encode_utf16().collect::<Vec<u16>>();
+        let data_type = "RAW\0".encode_utf16().collect::<Vec<u16>>();
+        
+        let doc_info = DOC_INFO_1W {
+            pDocName: doc_name.as_ptr() as *mut u16,
+            pOutputFile: std::ptr::null_mut(),
+            pDatatype: data_type.as_ptr() as *mut u16,
+        };
+
+        let job_id = unsafe {
+            StartDocPrinterW(h_printer, 1, &doc_info as *const DOC_INFO_1W)
+        };
+
+        if job_id == 0 {
+            unsafe { ClosePrinter(h_printer) };
+            return Err("Could not start print job via Windows Spooler.".to_string());
+        }
+
+        unsafe {
+            StartPagePrinter(h_printer);
+            let mut written = 0;
+            WritePrinter(h_printer, data.as_ptr() as *const _, data.len() as u32, &mut written);
+            EndPagePrinter(h_printer);
+            EndDocPrinter(h_printer);
+            ClosePrinter(h_printer);
+        }
 
         Ok(())
     }
 
-    fn print_test(&mut self) -> Result<(), String> {
-        let connection = self.connection.as_ref().ok_or("Printer not connected")?;
+    #[cfg(target_os = "windows")]
+    fn write_to_device_windows(&self, path: &str, data: &[u8]) -> Result<(), String> {
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, WriteFile, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+        };
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+
+        // Standard generic access rights
+        const GENERIC_READ: u32 = 0x80000000;
+        const GENERIC_WRITE: u32 = 0x40000000;
+
+        let mut wide: Vec<u16> = path.encode_utf16().collect();
+        wide.push(0);
+
+        let mut handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if handle == INVALID_HANDLE_VALUE {
+            // Try just WRITE if BOTH fails
+            handle = unsafe {
+                CreateFileW(
+                    wide.as_ptr(),
+                    GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    std::ptr::null(),
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    std::ptr::null_mut(),
+                )
+            };
+        }
+
+        if handle == INVALID_HANDLE_VALUE {
+            let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            return Err(format!("Cannot open {}: Windows error code {}", path, err));
+        }
+
+        let mut written: u32 = 0;
+        let success = unsafe {
+            WriteFile(
+                handle,
+                data.as_ptr(),
+                data.len() as u32,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        };
+
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+
+        if success == 0 {
+            let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            return Err(format!("Failed to write to {}: Windows error code {}", path, err));
+        }
+
+        Ok(())
+    }
+
+    pub fn print_test(&mut self) -> Result<(), String> {
         let config = self.config.as_ref().ok_or("No configuration found")?;
 
-        // Build test output
-        let mut output = String::new();
-        output.push_str("\n");
-        output.push_str("NEXORA POS\n");
-        output.push_str("Test Print\n");
-        output.push_str("\n");
+        let mut commands = vec![
+            template_render::PrintCommand::Init,
+            template_render::PrintCommand::Align("center".to_string()),
+            template_render::PrintCommand::Size(2, 2),
+            template_render::PrintCommand::Bold(true),
+            template_render::PrintCommand::WriteLine("NEXORA POS".to_string()),
+            template_render::PrintCommand::Size(1, 1),
+            template_render::PrintCommand::Bold(false),
+            template_render::PrintCommand::WriteLine("Test Print".to_string()),
+            template_render::PrintCommand::Feed(1),
+            template_render::PrintCommand::Align("left".to_string()),
+            template_render::PrintCommand::WriteLine("================================".to_string()),
+            template_render::PrintCommand::WriteLine(format!("Connection: {}", config.connection_type)),
+            template_render::PrintCommand::WriteLine(format!("Device: {}", config.device_path)),
+            template_render::PrintCommand::WriteLine(format!("Store: {}", config.store_name)),
+            template_render::PrintCommand::WriteLine("================================".to_string()),
+            template_render::PrintCommand::Feed(1),
+            template_render::PrintCommand::WriteLine("[OK] Connection Successful".to_string()),
+            template_render::PrintCommand::WriteLine(format!(
+                "Date: {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            )),
+            template_render::PrintCommand::Feed(1),
+            template_render::PrintCommand::WriteLine("Testing text output:".to_string()),
+            template_render::PrintCommand::WriteLine("Regular Text".to_string()),
+            template_render::PrintCommand::Bold(true),
+            template_render::PrintCommand::WriteLine("Bold Text".to_string()),
+            template_render::PrintCommand::Bold(false),
+            template_render::PrintCommand::Reverse(true),
+            template_render::PrintCommand::WriteLine("Inverted Text".to_string()),
+            template_render::PrintCommand::Reverse(false),
+            template_render::PrintCommand::Feed(1),
+            template_render::PrintCommand::WriteLine("ESC/POS Compatible [OK]".to_string()),
+            template_render::PrintCommand::Feed(3),
+            template_render::PrintCommand::Feed(1),
+            template_render::PrintCommand::Feed(1),
+            template_render::PrintCommand::Cut,
+        ];
 
-        output.push_str("================================\n");
-        output.push_str(&format!("Connection: {}\n", config.connection_type));
-        output.push_str(&format!("Device: {}\n", config.device_path));
-        output.push_str("================================\n");
-        output.push_str("\n");
-
-        output.push_str("[OK] Connection Successful\n");
-        output.push_str("\n");
-
-        output.push_str(&format!(
-            "Date: {}\n",
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-        ));
-        output.push_str("\n");
-
-        output.push_str("Testing text output:\n");
-        output.push_str("Regular Text\n");
-        output.push_str("Bold Text\n");
-        output.push_str("Styled Text\n");
-        output.push_str("\n\n");
-        output.push_str("ESC/POS Compatible [OK]\n");
-        output.push_str("\n\n\n");
-
-        // Print to console or device based on connection type
-        match connection {
-            PrinterConnection::Console => {
-                println!("{}", output);
-            }
-            PrinterConnection::USB(_) | PrinterConnection::Network(_) => {
-                // For real printers, we would write to the port
-                // For now, just log that we would print
-                log::info!("Would print test output to printer");
-                println!("{}", output);
-            }
-        }
-
-        log::info!("Test print completed successfully");
-        Ok(())
+        self.execute_commands(commands)
     }
 
-    #[allow(dead_code)]
-    fn print_receipt(&mut self, receipt: &Receipt) -> Result<(), String> {
-        let connection = self.connection.as_ref().ok_or("Printer not connected")?;
-        // Build receipt output
-        let mut output = String::new();
-        output.push_str("\n");
-        output.push_str("NEXORA POS\n");
-        output.push_str(&format!("Order #{}\n", receipt.order_id));
-        output.push_str(&receipt.timestamp);
-        output.push_str("\n\n");
+    pub fn print_receipt(&mut self, receipt: &Receipt) -> Result<(), String> {
+        // Convert legacy Receipt to ReceiptData and use print_with_template if possible
+        // Or just build commands manually for legacy support
+        let data = ReceiptData {
+            store_name: Some(self.config.as_ref().map(|c| c.store_name.clone()).unwrap_or_default()),
+            store_address: Some(self.config.as_ref().map(|c| c.store_address.clone()).unwrap_or_default()),
+            order_id: receipt.order_id.clone(),
+            timestamp: receipt.timestamp.clone(),
+            items: receipt
+                .items
+                .iter()
+                .map(|item| ReceiptItem {
+                    name: item.name.clone(),
+                    quantity: item.quantity,
+                    price: item.price,
+                    total: item.quantity as f64 * item.price,
+                    modifiers: None,
+                })
+                .collect(),
+            subtotal: receipt.subtotal,
+            tax: receipt.tax,
+            total: receipt.total,
+            payment_method: receipt.payment_method.clone(),
+            footer_message: Some(self.config.as_ref().map(|c| c.footer_message.clone()).unwrap_or_default()),
+            ..Default::default()
+        };
 
-        output.push_str("--------------------------------\n");
+        // If we have an active template, use it. Otherwise, build a simple receipt.
+        if self.active_template_id.is_some() {
+            return self.print_with_template(&data);
+        }
 
-        // Items
-        for item in &receipt.items {
-            let item_total = item.quantity as f64 * item.price;
-            output.push_str(&item.name);
-            output.push_str("\n");
+        let mut commands = vec![
+            template_render::PrintCommand::Init,
+            template_render::PrintCommand::Align("center".to_string()),
+            template_render::PrintCommand::Bold(true),
+            template_render::PrintCommand::WriteLine(data.store_name.unwrap_or_default()),
+            template_render::PrintCommand::Bold(false),
+            template_render::PrintCommand::WriteLine(data.store_address.unwrap_or_default()),
+            template_render::PrintCommand::Feed(1),
+            template_render::PrintCommand::Align("left".to_string()),
+            template_render::PrintCommand::WriteLine(format!("Order #{}", data.order_id)),
+            template_render::PrintCommand::WriteLine(data.timestamp),
+            template_render::PrintCommand::WriteLine("-".repeat(32)),
+        ];
 
+        for item in &data.items {
+            commands.push(template_render::PrintCommand::WriteLine(item.name.clone()));
             let qty_price = format!("{}x ${:.2}", item.quantity, item.price);
-            let total_str = format!("${:.2}", item_total);
-            let spaces = 32_usize.saturating_sub(qty_price.len() + total_str.len());
-            let line = format!("{}{}{}", qty_price, " ".repeat(spaces), total_str);
-
-            output.push_str(&line);
-            output.push_str("\n");
+            let total = format!("${:.2}", item.total);
+            let spaces = 32_usize.saturating_sub(qty_price.len() + total.len());
+            commands.push(template_render::PrintCommand::WriteLine(format!(
+                "{}{}{}",
+                qty_price,
+                " ".repeat(spaces),
+                total
+            )));
         }
 
-        output.push_str("--------------------------------\n");
+        commands.extend_from_slice(&[
+            template_render::PrintCommand::WriteLine("-".repeat(32)),
+            template_render::PrintCommand::WriteLine(format!("Subtotal:                ${:.2}", data.subtotal)),
+            template_render::PrintCommand::WriteLine(format!("Tax:                     ${:.2}", data.tax)),
+            template_render::PrintCommand::Bold(true),
+            template_render::PrintCommand::WriteLine(format!("TOTAL:                   ${:.2}", data.total)),
+            template_render::PrintCommand::Bold(false),
+            template_render::PrintCommand::WriteLine("-".repeat(32)),
+            template_render::PrintCommand::WriteLine(format!("Payment: {}", data.payment_method)),
+            template_render::PrintCommand::Feed(1),
+            template_render::PrintCommand::Align("center".to_string()),
+            template_render::PrintCommand::WriteLine(data.footer_message.unwrap_or_default()),
+            template_render::PrintCommand::WriteLine("Powered by Nexora POS".to_string()),
+            template_render::PrintCommand::Feed(3),
+            template_render::PrintCommand::Cut,
+        ]);
 
-        // Totals
-        let subtotal_line = format!("Subtotal:                ${:.2}\n", receipt.subtotal);
-        output.push_str(&subtotal_line);
-
-        let tax_line = format!("Tax:                     ${:.2}\n", receipt.tax);
-        output.push_str(&tax_line);
-
-        let total_line = format!("TOTAL:                   ${:.2}\n", receipt.total);
-        output.push_str(&total_line);
-
-        output.push_str("--------------------------------\n");
-        output.push_str(&format!("Payment: {}\n", receipt.payment_method));
-        // Footer
-        output.push_str("\n");
-        output.push_str("Thank you for your business!\n");
-        output.push_str("Powered by Nexora POS\n");
-        output.push_str("\n\n\n");
-
-        // Print to console or device based on connection type
-        match connection {
-            PrinterConnection::Console => {
-                println!("{}", output);
-            }
-            PrinterConnection::USB(_) | PrinterConnection::Network(_) => {
-                // For real printers, we would write to the port
-                // For now, just log that we would print
-                log::info!("Would print receipt to printer");
-                println!("{}", output);
-            }
-        }
-
-        log::info!("Receipt printed: Order #{}", receipt.order_id);
-        Ok(())
+        self.execute_commands(commands)
     }
 }
 
@@ -295,9 +538,12 @@ fn scan_available_devices() -> Vec<Device> {
             for port in ports {
                 let description = match &port.port_type {
                     serialport::SerialPortType::UsbPort(info) => {
-                        format!("USB Device (VID:{:04x} PID:{:04x})", info.vid, info.pid)
+                        format!(
+                            "USB Serial (VID:{:04x} PID:{:04x})",
+                            info.vid, info.pid
+                        )
                     }
-                    _ => "Serial/USB Device".to_string(),
+                    _ => "Serial Port".to_string(),
                 };
 
                 devices.push(Device {
@@ -309,6 +555,63 @@ fn scan_available_devices() -> Vec<Device> {
         }
         Err(e) => {
             log::warn!("Failed to scan serial ports: {}", e);
+        }
+    }
+
+    // Add common USB printer paths for Windows as suggestions (Proactive probe)
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+        };
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use winreg::enums::*;
+        use winreg::RegKey;
+        
+        const GENERIC_WRITE: u32 = 0x40000000;
+
+        // 1. Find all installed printers from Registry (Most reliable for usb00X)
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(printers_key) = hkcu.open_subkey("Software\\Microsoft\\Windows NT\\CurrentVersion\\Devices") {
+            for (name, value) in printers_key.enum_values().flatten() {
+                let value_str = value.to_string();
+                let port = value_str.split(',').nth(1).unwrap_or("").trim();
+                
+                devices.push(Device {
+                    path: name.clone().into(),
+                    description: format!("Printer on port: {}", port).into(),
+                    r#type: "USB".into(),
+                });
+            }
+        }
+
+        // 2. Try to find raw ports from Registry
+        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+        if let Ok(ports_key) = hklm.open_subkey("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Ports") {
+            for (name, _) in ports_key.enum_values().flatten() {
+                if name.starts_with("usb") || name.starts_with("USB") || name.starts_with("LPT") {
+                    let path = if name.starts_with(r"\\") { name.clone() } else { format!(r"\\.\{}", name) };
+                    
+                    // Only add if not already added as a printer
+                    if !devices.iter().any(|d| d.description.contains(&name)) {
+                        devices.push(Device {
+                            path: path.into(),
+                            description: format!("System Port: {}", name).into(),
+                            r#type: if name.starts_with("LPT") { "LPT".into() } else { "USB".into() },
+                        });
+                    }
+                }
+            }
+        }
+        
+        // 3. Fallback hint
+        if devices.is_empty() {
+             devices.push(Device {
+                path: r"\\.\usb001".into(),
+                description: "Manual Entry (Check Devices & Printers)".into(),
+                r#type: "USB".into(),
+            });
         }
     }
 
@@ -336,7 +639,7 @@ fn scan_available_devices() -> Vec<Device> {
         if let std::net::IpAddr::V4(ipv4) = local_ip {
             let octets = ipv4.octets();
             let base = format!("{}.{}.{}", octets[0], octets[1], octets[2]);
-
+            
             devices.push(Device {
                 path: format!("{}.100", base).into(),
                 description: format!("Suggested: {}.100", base).into(),
@@ -353,10 +656,10 @@ fn scan_available_devices() -> Vec<Device> {
 fn get_config_path() -> Result<std::path::PathBuf, String> {
     let config_dir = directories::ProjectDirs::from("com", "nexora", "printer-manager")
         .ok_or("Failed to determine config directory")?;
-
+    
     std::fs::create_dir_all(config_dir.config_dir())
         .map_err(|e| format!("Failed to create config directory: {}", e))?;
-
+    
     Ok(config_dir.config_dir().join("config.json"))
 }
 
@@ -364,26 +667,27 @@ fn save_config(config: &PrinterConfig) -> Result<(), String> {
     let path = get_config_path()?;
     let json = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-
-    std::fs::write(path, json).map_err(|e| format!("Failed to write config: {}", e))?;
-
+    
+    std::fs::write(path, json)
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+    
     log::info!("Configuration saved");
     Ok(())
 }
 
 fn load_config() -> Result<Option<PrinterConfig>, String> {
     let path = get_config_path()?;
-
+    
     if !path.exists() {
         return Ok(None);
     }
-
-    let json =
-        std::fs::read_to_string(path).map_err(|e| format!("Failed to read config: {}", e))?;
-
-    let config: PrinterConfig =
-        serde_json::from_str(&json).map_err(|e| format!("Failed to parse config: {}", e))?;
-
+    
+    let json = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read config: {}", e))?;
+    
+    let config: PrinterConfig = serde_json::from_str(&json)
+        .map_err(|e| format!("Failed to parse config: {}", e))?;
+    
     log::info!("Configuration loaded");
     Ok(Some(config))
 }
@@ -394,38 +698,14 @@ fn load_config() -> Result<Option<PrinterConfig>, String> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     env_logger::init();
-
-    log::info!(
-        "Starting Nexora Printer Manager v{}",
-        env!("CARGO_PKG_VERSION")
-    );
-
-    // Start hidden when launched by the OS at login
-    let start_minimized = std::env::args().any(|a| a == "--minimized");
+    
+    log::info!("Starting Nexora Printer Manager v1.0.0");
 
     // Create printer manager
     let printer_manager = Arc::new(Mutex::new(PrinterManager::new()));
 
-    let autostart = Autostart::new();
-    let tray = Tray::new(autostart.is_enabled());
-    let menu_channel = Tray::event_receiver();
-
     // Create UI
     let ui = MainWindow::new()?;
-
-    {
-        let ui_handle = ui.as_weak();
-        ui.window().on_close_requested(move || {
-            if let Some(ui) = ui_handle.upgrade() {
-                ui.window().hide().unwrap();
-            }
-            slint::CloseRequestResponse::KeepWindowShown
-        });
-    }
-
-    if start_minimized {
-        ui.window().hide()?;
-    }
 
     // Start HTTP server
     let printer_manager_clone = Arc::clone(&printer_manager);
@@ -445,36 +725,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         log::info!("Loaded saved configuration");
     }
 
-    // ── Tray event polling ─────────────────────────────────────────────────────
-    {
-        let ui_handle = ui.as_weak();
-        let timer = slint::Timer::default();
-        timer.start(
-            slint::TimerMode::Repeated,
-            std::time::Duration::from_millis(100),
-            move || {
-                while let Ok(event) = menu_channel.try_recv() {
-                    let Some(ui) = ui_handle.upgrade() else {
-                        return;
-                    };
-
-                    if event.id == tray.ids.show {
-                        ui.window().show().unwrap();
-                    } else if event.id == tray.ids.toggle_autostart {
-                        match autostart.toggle() {
-                            Ok(true) => ui.set_status_message("Launch at startup enabled".into()),
-                            Ok(false) => ui.set_status_message("Launch at startup disabled".into()),
-                            Err(e) => ui.set_status_message(format!("✗ {}", e).into()),
-                        }
-                    } else if event.id == tray.ids.quit {
-                        slint::quit_event_loop().unwrap();
-                    }
-                }
-            },
-        );
-        std::mem::forget(timer); // keep alive past this scope
-    }
-
     // Scan devices callback
     {
         let ui_handle = ui.as_weak();
@@ -482,18 +732,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ui = ui_handle.unwrap();
             ui.set_is_loading(true);
             ui.set_status_message("Scanning for devices...".into());
-
+            
             let devices = scan_available_devices();
-
+            
             let device_models: Vec<Device> = devices.into_iter().collect();
             let model_array = std::rc::Rc::new(slint::VecModel::from(device_models));
             ui.set_available_devices(model_array.into());
-
+            
             ui.set_is_loading(false);
-            ui.set_status_message(
-                format!("Found {} device(s)", ui.get_available_devices().row_count()).into(),
-            );
-
+            ui.set_status_message(format!("Found {} device(s)", ui.get_available_devices().row_count()).into());
+            
             log::info!("Device scan completed");
         });
     }
@@ -502,24 +750,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let ui_handle = ui.as_weak();
         let manager = Arc::clone(&printer_manager);
-
+        
         ui.on_connect_printer(move |conn_type, device| {
             let ui = ui_handle.unwrap();
             ui.set_is_loading(true);
             ui.set_status_message("Connecting to printer...".into());
+            
+            // Load current config to keep store name, etc. if they exist
+            let current_config = load_config().ok().flatten();
 
             let config = PrinterConfig {
                 connection_type: conn_type.to_string(),
                 device_path: device.to_string(),
+                store_name: current_config.as_ref().map(|c| c.store_name.clone()).unwrap_or_else(|| "Nexora POS".to_string()),
+                store_address: current_config.as_ref().map(|c| c.store_address.clone()).unwrap_or_else(|| "Main Branch".to_string()),
+                footer_message: current_config.as_ref().map(|c| c.footer_message.clone()).unwrap_or_else(|| "Thank you for your visit!".to_string()),
             };
-
+            
             let mut manager = manager.lock().unwrap();
-
+            
             match manager.connect(config.clone()) {
                 Ok(_) => {
                     ui.set_is_connected(true);
                     ui.set_status_message("✓ Printer connected successfully!".into());
-
+                    
                     // Save configuration
                     if let Err(e) = save_config(&config) {
                         log::warn!("Failed to save config: {}", e);
@@ -531,7 +785,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     log::error!("Connection failed: {}", e);
                 }
             }
-
+            
             ui.set_is_loading(false);
         });
     }
@@ -540,7 +794,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let ui_handle = ui.as_weak();
         let manager = Arc::clone(&printer_manager);
-
+        
         ui.on_disconnect_printer(move || {
             let ui = ui_handle.unwrap();
             let mut manager = manager.lock().unwrap();
@@ -554,14 +808,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let ui_handle = ui.as_weak();
         let manager = Arc::clone(&printer_manager);
-
+        
         ui.on_test_print(move || {
             let ui = ui_handle.unwrap();
             ui.set_is_loading(true);
             ui.set_status_message("Printing test page...".into());
-
+            
             let mut manager = manager.lock().unwrap();
-
+            
             match manager.print_test() {
                 Ok(_) => {
                     ui.set_status_message("✓ Test page printed successfully!".into());
@@ -571,7 +825,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     log::error!("Test print failed: {}", e);
                 }
             }
-
+            
             ui.set_is_loading(false);
         });
     }
@@ -579,15 +833,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Save settings callback
     {
         let ui_handle = ui.as_weak();
-
+        
         ui.on_save_settings(move || {
             let ui = ui_handle.unwrap();
+            
+            // Load current config to keep store name, etc. if they exist
+            let current_config = load_config().ok().flatten();
 
             let config = PrinterConfig {
                 connection_type: ui.get_selected_connection_type().to_string(),
                 device_path: ui.get_selected_device().to_string(),
+                store_name: current_config.as_ref().map(|c| c.store_name.clone()).unwrap_or_else(|| "Nexora POS".to_string()),
+                store_address: current_config.as_ref().map(|c| c.store_address.clone()).unwrap_or_else(|| "Main Branch".to_string()),
+                footer_message: current_config.as_ref().map(|c| c.footer_message.clone()).unwrap_or_else(|| "Thank you for your visit!".to_string()),
             };
-
+            
             match save_config(&config) {
                 Ok(_) => {
                     ui.set_status_message("✓ Settings saved successfully!".into());

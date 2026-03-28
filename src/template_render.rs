@@ -495,7 +495,12 @@ impl TemplateRenderer {
         }
 
         // Final feed and cut
-        commands.push(PrintCommand::Feed(3));
+        commands.push(PrintCommand::Feed(1));
+        commands.push(PrintCommand::Feed(1));
+        commands.push(PrintCommand::Feed(1));
+        commands.push(PrintCommand::Feed(1));
+        commands.push(PrintCommand::Feed(1));
+        commands.push(PrintCommand::Feed(1));
         commands.push(PrintCommand::Cut);
 
         Ok(commands)
@@ -674,11 +679,11 @@ impl TemplateRenderer {
     ) -> Result<(), String> {
         let character = if let Some(pattern) = &element.pattern {
             match pattern.as_str() {
-                "diamond" => "◆ ",
+                "diamond" => "* ",
                 "wave" => "~",
-                "dot" => "·",
+                "dot" => ".",
                 "star" => "* ",
-                "elegant" | "fancy" | "line" => "─",
+                "elegant" | "fancy" | "line" => "-",
                 _ => "-",
             }
         } else {
@@ -686,14 +691,15 @@ impl TemplateRenderer {
                 "double" => "=",
                 "dashed" => "-",
                 "dotted" => ".",
-                "thick" | "solid" => "━",
-                "thin" | "elegant" | "gradient" => "─",
+                "thick" | "solid" => "=",
+                "thin" | "elegant" | "gradient" => "-",
                 "custom" => element.character.as_deref().unwrap_or("-"),
                 _ => "-",
             }
         };
 
-        let width = self.paper_width as usize;
+        // Subtract 6 from paper width as a safety margin to prevent wrapping on some printers
+        let width = (self.paper_width as usize).saturating_sub(6);
 
         // For patterns with spaces, adjust repetition
         let divider = if character.contains(' ') {
@@ -745,19 +751,27 @@ impl TemplateRenderer {
             .map(|s| self.substitute_variables(s, data))
             .unwrap_or_default();
 
-        let width = self.paper_width as usize;
-        let total_content_len = left.chars().count() + right.chars().count();
+        // Use a safety margin of 6 characters (Paper Width - 6) to prevent physical wrapping
+        let base_width = (self.paper_width as usize).saturating_sub(6);
+        
+        // Adjust width based on font size. If font size is 2, characters are twice as wide.
+        let font_size = element.font_size.unwrap_or(1) as usize;
+        let width = base_width / font_size;
+        
+        // Truncate left if combined is too long, or right? 
+        // Let's ensure they fit by calculating space.
+        let left_chars: Vec<char> = left.chars().collect();
+        let right_chars: Vec<char> = right.chars().collect();
+        let total_chars = left_chars.len() + right_chars.len() + 1; // +1 for minimum space
 
-        let line = if total_content_len < width {
-            let spaces = width - total_content_len;
-            format!(
-                "{}{:>width$}",
-                left,
-                right,
-                width = right.chars().count() + spaces
-            )
+        let line = if total_chars <= width {
+            let spaces = width - (left_chars.len() + right_chars.len());
+            format!("{}{}{}", left, " ".repeat(spaces), right)
         } else {
-            format!("{} {}", left, right)
+            // Content is too wide, truncate left part to fit
+            let available_for_left = width.saturating_sub(right_chars.len() + 1);
+            let truncated_left: String = left_chars.iter().take(available_for_left).collect();
+            format!("{} {}", truncated_left, right)
         };
 
         commands.push(PrintCommand::WriteLine(line));
@@ -845,7 +859,8 @@ impl TemplateRenderer {
             }
 
             if element.header_divider.unwrap_or(true) {
-                let divider = "-".repeat(self.paper_width as usize);
+                let width = (self.paper_width as usize).saturating_sub(6);
+                let divider = "-".repeat(width);
                 commands.push(PrintCommand::WriteLine(divider));
             }
         }
@@ -968,7 +983,9 @@ impl TemplateRenderer {
         if border > 0 {
             let border_positions = element.border_position.as_deref().unwrap_or("all");
             if border_positions.contains("top") || border_positions == "all" {
-                let border_line = "━".repeat(self.paper_width as usize);
+                // Use the same 6-character safety margin as dividers
+                let width = (self.paper_width as usize).saturating_sub(6);
+                let border_line = "=".repeat(width);
                 commands.push(PrintCommand::WriteLine(border_line));
             }
         }
@@ -995,7 +1012,9 @@ impl TemplateRenderer {
                 || border_positions == "all"
                 || border_positions == "top-bottom"
             {
-                let border_line = "━".repeat(self.paper_width as usize);
+                // Use the same 6-character safety margin as dividers
+                let width = (self.paper_width as usize).saturating_sub(6);
+                let border_line = "=".repeat(width);
                 commands.push(PrintCommand::WriteLine(border_line));
             }
         }
@@ -1073,13 +1092,13 @@ impl TemplateRenderer {
             return Ok(());
         }
 
-        let chart_width = (self.paper_width - 10) as usize; // Leave room for labels
+        let chart_width = (self.paper_width as usize).saturating_sub(15); // Leave room for labels and safety margin
 
         for row in &rows {
             if let Some(value_str) = row.get(&element.value_field) {
                 if let Ok(value) = value_str.parse::<f64>() {
                     let bar_length = ((value / max_value) * chart_width as f64) as usize;
-                    let bar = "█".repeat(bar_length);
+                    let bar_content = " ".repeat(bar_length.max(1)); // At least 1 space if value > 0
 
                     // Get label (try hour field for hourly data)
                     let label = row
@@ -1088,8 +1107,19 @@ impl TemplateRenderer {
                         .cloned()
                         .unwrap_or_default();
 
-                    let line = format!("{:>5} │{}", label, bar);
-                    commands.push(PrintCommand::WriteLine(line));
+                    let label = if label.len() > 5 { &label[0..5] } else { &label };
+                    
+                    // Print label and separator without newline
+                     commands.push(PrintCommand::Align("left".to_string()));
+                     commands.push(PrintCommand::Write(format!("{:>5} |", label)));
+                     
+                     // Print the black bar on the same line using reverse mode
+                     commands.push(PrintCommand::Reverse(true));
+                     commands.push(PrintCommand::Write(bar_content));
+                     commands.push(PrintCommand::Reverse(false));
+                     
+                     // End the line
+                     commands.push(PrintCommand::Write("\n".to_string()));
                 }
             }
         }
@@ -1106,6 +1136,9 @@ impl TemplateRenderer {
     ) -> Result<(), String> {
         let rows = self.get_data_source_items(&element.data_source, data);
         let highlight_top = element.highlight_top.unwrap_or(0);
+        
+        // Use the same 6-character safety margin as dividers
+        let width = (self.paper_width as usize).saturating_sub(6);
 
         for (index, row) in rows.iter().enumerate() {
             let rank = row.get(&element.fields.rank).cloned().unwrap_or_default();
@@ -1126,6 +1159,8 @@ impl TemplateRenderer {
                 .and_then(|f| row.get(f))
                 .cloned()
                 .unwrap_or_default();
+            
+            let formatted_sales = format!("${}", sales);
 
             // Highlight top performers
             if index < highlight_top as usize {
@@ -1133,11 +1168,30 @@ impl TemplateRenderer {
                 commands.push(PrintCommand::Reverse(true));
             }
 
-            // Format leaderboard entry
+            // Format leaderboard entry to fill the target width
             let entry = if shift.is_empty() {
-                format!("{:>2}. {:<20} ${}", rank, name, sales)
+                // Rank. Name (flex) Sales
+                let rank_part = format!("{:>2}. ", rank);
+                let sales_part = formatted_sales;
+                let used_width = rank_part.chars().count() + sales_part.chars().count();
+                let name_width = width.saturating_sub(used_width);
+                format!("{}{:<name_width$}{}", rank_part, name, sales_part, name_width = name_width)
             } else {
-                format!("{:>2}. {:<15} {:>8} ${}", rank, name, shift, sales)
+                // Rank. Name (flex) Shift (8) Sales
+                let rank_part = format!("{:>2}. ", rank);
+                let shift_part = format!(" {:>8} ", shift);
+                let sales_part = formatted_sales;
+                let used_width = rank_part.chars().count() + shift_part.chars().count() + sales_part.chars().count();
+                let name_width = width.saturating_sub(used_width);
+                format!("{}{:<name_width$}{}{}", rank_part, name, shift_part, sales_part, name_width = name_width)
+            };
+
+            // Final safety check to ensure we don't exceed the width
+            let entry = if entry.chars().count() > width {
+                entry.chars().take(width).collect()
+            } else {
+                // Pad with spaces to ensure the reverse background covers the full line
+                format!("{:<width$}", entry, width = width)
             };
 
             commands.push(PrintCommand::WriteLine(entry));
@@ -1158,26 +1212,34 @@ impl TemplateRenderer {
         data: Option<&HashMap<String, String>>,
     ) -> String {
         let mut line = String::new();
-        let _total_width = self.paper_width as usize;
+        // Consistently use paper_width - 6 for all table elements
+        let total_width = (self.paper_width as usize).saturating_sub(6);
+        let num_columns = columns.len();
+        
+        if num_columns == 0 { return String::new(); }
 
-        let specified_width: u32 = columns.iter().filter_map(|c| c.width).sum();
+        // Spaces between columns
+        let spaces_total = num_columns - 1;
+        let usable_width = total_width.saturating_sub(spaces_total);
 
-        let remaining = if specified_width < self.paper_width {
-            self.paper_width - specified_width
-        } else {
-            0
-        };
+        // Use incremental scaling (Error Diffusion) to calculate column widths.
+        // This ensures headers and rows always use the exact same character positions.
+        let total_units: f64 = columns.iter()
+            .map(|c| c.width.unwrap_or(10) as f64)
+            .sum();
 
-        let unspecified_count = columns.iter().filter(|c| c.width.is_none()).count() as u32;
-
+        let mut current_pos = 0;
         for (i, col) in columns.iter().enumerate() {
-            let width = col.width.unwrap_or_else(|| {
-                if unspecified_count > 0 {
-                    remaining / unspecified_count
-                } else {
-                    10
-                }
-            }) as usize;
+            // Calculate the end position for this column based on cumulative units
+            let cumulative_units: f64 = columns.iter().take(i + 1).map(|c| c.width.unwrap_or(10) as f64).sum();
+            let next_pos = if total_units > 0.0 {
+                ((cumulative_units / total_units) * usable_width as f64).round() as usize
+            } else {
+                (i + 1) * (usable_width / num_columns)
+            };
+            
+            let width = next_pos.saturating_sub(current_pos).max(1);
+            current_pos = next_pos;
 
             let content = if let Some(data) = data {
                 let raw = data.get(&col.field).cloned().unwrap_or_default();
@@ -1200,9 +1262,10 @@ impl TemplateRenderer {
                 col.header.clone().unwrap_or_else(|| col.field.clone())
             };
 
-            // Truncate if too long
-            let content = if content.len() > width {
-                content[..width].to_string()
+            // Truncate content to column width BEFORE alignment
+            let content_chars: Vec<char> = content.chars().collect();
+            let content = if content_chars.len() > width {
+                content_chars.iter().take(width).collect::<String>()
             } else {
                 content
             };
@@ -1215,12 +1278,20 @@ impl TemplateRenderer {
 
             line.push_str(&aligned_content);
 
-            if i < columns.len() - 1 {
+            if i < num_columns - 1 {
                 line.push(' ');
             }
         }
 
-        line
+        // Final safety padding to ensure the background covers the full paper_width - 6
+        let current_count = line.chars().count();
+        if current_count < total_width {
+            format!("{:<width$}", line, width = total_width)
+        } else if current_count > total_width {
+            line.chars().take(total_width).collect()
+        } else {
+            line
+        }
     }
 
     /// Get items from a data source
@@ -1438,6 +1509,7 @@ impl TemplateRenderer {
 #[derive(Debug, Clone)]
 pub enum PrintCommand {
     Init,
+    Write(String),
     WriteLine(String),
     Feed(u8),
     Cut,

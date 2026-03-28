@@ -514,7 +514,7 @@ checksum = "1f012b8cc0c850f34117ec8252a44418f2e34a2cf501de89e29b241ae5f79471"
 dependencies = [
  "dirs 4.0.0",
  "thiserror 1.0.69",
- "winreg",
+ "winreg 0.10.1",
 ]
 
 [[package]]
@@ -3520,7 +3520,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nexora-printer-manager"
-version = "1.2.3"
+version = "1.3.0"
 dependencies = [
  "anyhow",
  "auto-launch",
@@ -3543,6 +3543,8 @@ dependencies = [
  "tokio",
  "tower-http",
  "tray-icon",
+ "windows-sys 0.61.2",
+ "winreg 0.56.0",
  "winresource",
 ]
 
@@ -6885,6 +6887,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "80d0f4e272c85def139476380b12f9ac60926689dd2e01d4923222f40580869d"
 dependencies = [
  "winapi",
+]
+
+[[package]]
+name = "winreg"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

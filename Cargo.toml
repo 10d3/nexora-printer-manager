@@ -1,6 +1,6 @@
 [package]
 name = "nexora-printer-manager"
-version = "1.2.3"
+version = "1.3.0"
 description = "Nexora POS Printer Manager - Professional ESC/POS printer setup and management"
 authors = ["Nexora Team"]
 license = "GPL-3.0-only"
@@ -53,6 +53,13 @@ chrono = "0.4"
 
 # Regex
 regex = "1.10"
+winreg = "0.56.0"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_Graphics_Printing",
+] }
 
 [build-dependencies]
 slint-build = "1.3"
