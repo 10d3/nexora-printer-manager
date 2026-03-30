@@ -1,14 +1,21 @@
 // Nexora POS Printer Manager
 // Complete ESC/POS printer management with USB, Network, and LPT support
 
-#![windows_subsystem = "windows"]
+// #![windows_subsystem = "windows"]
 
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use slint::Model;
+use slint::{Model, CloseRequestResponse};
+use tray_icon::{
+    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    TrayIconBuilder,
+};
+use auto_launch::AutoLaunchBuilder;
+use std::env;
 
 mod http_server;
 mod template_render;
+mod image_print;
 
 pub use template_render::{
     Element, ReceiptData, ReceiptItem, ReceiptTemplate, Section, TemplateLayout, TemplateRenderer,
@@ -19,32 +26,32 @@ slint::include_modules!();
 // ==================== Configuration Models ====================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PrinterConfig {
-    connection_type: String,
-    device_path: String,
-    store_name: String,
-    store_address: String,
-    footer_message: String,
+pub struct PrinterConfig {
+    pub connection_type: String,
+    pub device_path: String,
+    pub store_name: String,
+    pub store_address: String,
+    pub footer_message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
-struct LineItem {
-    name: String,
-    quantity: u32,
-    price: f64,
+pub struct LineItem {
+    pub name: String,
+    pub quantity: u32,
+    pub price: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
-struct Receipt {
-    order_id: String,
-    timestamp: String,
-    items: Vec<LineItem>,
-    subtotal: f64,
-    tax: f64,
-    total: f64,
-    payment_method: String,
+pub struct Receipt {
+    pub order_id: String,
+    pub timestamp: String,
+    pub items: Vec<LineItem>,
+    pub subtotal: f64,
+    pub tax: f64,
+    pub total: f64,
+    pub payment_method: String,
 }
 
 // ==================== Printer Manager ====================
@@ -110,7 +117,7 @@ impl PrinterManager {
                         };
 
                         if handle == INVALID_HANDLE_VALUE {
-                            let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+                            let _err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
                             // If port fails, try to see if it's actually a system printer name
                             self.connection = Some(PrinterConnection::System(config.device_path.clone()));
                         } else {
@@ -175,6 +182,42 @@ impl PrinterManager {
         Ok(())
     }
 
+    pub fn print_raw(&mut self, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let connection = self.connection.as_ref().ok_or("Printer not connected")?;
+
+    match connection {
+        PrinterConnection::Console => {
+            println!("[Image data: {} bytes]", bytes.len());
+        }
+        PrinterConnection::USB(path) | PrinterConnection::LPT(path) => {
+            let path = path.clone();
+            #[cfg(target_os = "windows")]
+            self.write_to_device_windows(&path, bytes).map_err(|e| e)?;
+            #[cfg(not(target_os = "windows"))]
+            {
+                use std::io::Write;
+                let mut file = std::fs::File::create(&path)?;
+                file.write_all(bytes)?;
+            }
+        }
+        PrinterConnection::Network(addr) => {
+            use std::io::Write;
+            let addr = addr.clone();
+            let mut stream = std::net::TcpStream::connect(&addr)?;
+            stream.write_all(bytes)?;
+        }
+        PrinterConnection::System(name) => {
+            let name = name.clone();
+            #[cfg(target_os = "windows")]
+            self.write_to_system_printer_windows(&name, bytes).map_err(|e| e)?;
+            #[cfg(not(target_os = "windows"))]
+            return Err("System printer only supported on Windows".into());
+        }
+    }
+
+    Ok(())
+}
+
     pub fn print_with_template(&mut self, data: &ReceiptData) -> Result<(), String> {
         let template_id = self.active_template_id.as_ref().ok_or("No active template set")?;
         let template = self.template_cache.get(template_id).ok_or("Template not found in cache")?;
@@ -230,7 +273,7 @@ impl PrinterManager {
                     };
                     bytes.extend_from_slice(&[0x1B, 0x61, n]);
                 }
-                template_render::PrintCommand::QRCode { content, size } => {
+                template_render::PrintCommand::QRCode { content, size: _ } => {
                     // Simplified QR code (requires actual implementation for different printers)
                     log::warn!("QR Code not fully implemented in raw bytes");
                     bytes.extend_from_slice(format!("[QR: {}]", content).as_bytes());
@@ -241,6 +284,9 @@ impl PrinterManager {
                     bytes.extend_from_slice(format!("[Barcode: {}]", content).as_bytes());
                     bytes.push(b'\n');
                 }
+                template_render::PrintCommand::Image(img_bytes) => {
+    bytes.extend_from_slice(&img_bytes);
+}
             }
         }
 
@@ -290,7 +336,6 @@ impl PrinterManager {
             StartPagePrinter, EndPagePrinter, WritePrinter, DOC_INFO_1W,
             PRINTER_HANDLE
         };
-        use std::ptr;
 
         let mut wide_name: Vec<u16> = name.encode_utf16().collect();
         wide_name.push(0);
@@ -405,7 +450,7 @@ impl PrinterManager {
     pub fn print_test(&mut self) -> Result<(), String> {
         let config = self.config.as_ref().ok_or("No configuration found")?;
 
-        let mut commands = vec![
+        let commands = vec![
             template_render::PrintCommand::Init,
             template_render::PrintCommand::Align("center".to_string()),
             template_render::PrintCommand::Size(2, 2),
@@ -558,18 +603,10 @@ fn scan_available_devices() -> Vec<Device> {
         }
     }
 
-    // Add common USB printer paths for Windows as suggestions (Proactive probe)
     #[cfg(target_os = "windows")]
     {
-        use windows_sys::Win32::Storage::FileSystem::{
-            CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-        };
-        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
         use winreg::enums::*;
         use winreg::RegKey;
-        
-        const GENERIC_WRITE: u32 = 0x40000000;
 
         // 1. Find all installed printers from Registry (Most reliable for usb00X)
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -694,83 +731,207 @@ fn load_config() -> Result<Option<PrinterConfig>, String> {
 
 // ==================== Main Application ====================
 
+fn load_tray_icon() -> tray_icon::Icon {
+    let paths = ["assets/nexora.png", "assets/favicon.ico"];
+    
+    for path in paths {
+        let icon_path = std::path::Path::new(path);
+        if icon_path.exists() {
+            log::info!("Attempting to load tray icon from {:?}", path);
+            match image::open(icon_path) {
+                Ok(image_data) => {
+                    let image_rgba = image_data.into_rgba8();
+                    let (width, height) = image_rgba.dimensions();
+                    let rgba = image_rgba.into_raw();
+                    match tray_icon::Icon::from_rgba(rgba, width, height) {
+                        Ok(icon) => return icon,
+                        Err(e) => log::warn!("Failed to create icon from {:?}: {}", path, e),
+                    }
+                }
+                Err(e) => log::warn!("Failed to decode icon image {:?}: {}", path, e),
+            }
+        }
+    }
+
+    log::warn!("No valid tray icon found, using fallback empty icon");
+    tray_icon::Icon::from_rgba(vec![0; 4], 1, 1).unwrap()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     env_logger::init();
     
-    log::info!("Starting Nexora Printer Manager v1.0.0");
-
     // Create printer manager
     let printer_manager = Arc::new(Mutex::new(PrinterManager::new()));
 
-    // Create UI
-    let ui = MainWindow::new()?;
+    // Keep the tray icon alive
+    let mut _tray_icon_handle = None;
 
-    // Start HTTP server
-    let printer_manager_clone = Arc::clone(&printer_manager);
-    tokio::spawn(async move {
-        if let Err(e) = http_server::start_server(printer_manager_clone, 8080).await {
-            log::error!("HTTP server error: {}", e);
-        } else {
-            log::info!("HTTP server started on port 8080");
-        }
-    });
+    let result = async {
+        let args: Vec<String> = env::args().collect();
+        let minimized = args.contains(&"--minimized".to_string());
 
-    // Load saved configuration
-    if let Ok(Some(config)) = load_config() {
-        ui.set_selected_connection_type(config.connection_type.clone().into());
-        ui.set_selected_device(config.device_path.clone().into());
-        ui.set_status_message("Configuration loaded successfully".into());
-        log::info!("Loaded saved configuration");
-    }
+        log::info!("Starting Nexora Printer Manager v1.4.0");
 
-    // Scan devices callback
-    {
-        let ui_handle = ui.as_weak();
-        ui.on_scan_devices(move || {
-            let ui = ui_handle.unwrap();
-            ui.set_is_loading(true);
-            ui.set_status_message("Scanning for devices...".into());
-            
-            let devices = scan_available_devices();
-            
-            let device_models: Vec<Device> = devices.into_iter().collect();
-            let model_array = std::rc::Rc::new(slint::VecModel::from(device_models));
-            ui.set_available_devices(model_array.into());
-            
-            ui.set_is_loading(false);
-            ui.set_status_message(format!("Found {} device(s)", ui.get_available_devices().row_count()).into());
-            
-            log::info!("Device scan completed");
-        });
-    }
-
-    // Connect printer callback
-    {
-        let ui_handle = ui.as_weak();
-        let manager = Arc::clone(&printer_manager);
+        // Setup Auto-launch
+        let app_exe = env::current_exe()?;
+        let app_path = app_exe.to_str().unwrap_or_default();
+        log::info!("App path: {}", app_path);
         
-        ui.on_connect_printer(move |conn_type, device| {
-            let ui = ui_handle.unwrap();
-            ui.set_is_loading(true);
-            ui.set_status_message("Connecting to printer...".into());
-            
-            // Load current config to keep store name, etc. if they exist
-            let current_config = load_config().ok().flatten();
+        let auto = AutoLaunchBuilder::new()
+            .set_app_name("Nexora Printer Manager")
+            .set_app_path(app_path)
+            .set_args(&["--minimized"])
+            .build()?;
 
-            let config = PrinterConfig {
-                connection_type: conn_type.to_string(),
-                device_path: device.to_string(),
-                store_name: current_config.as_ref().map(|c| c.store_name.clone()).unwrap_or_else(|| "Nexora POS".to_string()),
-                store_address: current_config.as_ref().map(|c| c.store_address.clone()).unwrap_or_else(|| "Main Branch".to_string()),
-                footer_message: current_config.as_ref().map(|c| c.footer_message.clone()).unwrap_or_else(|| "Thank you for your visit!".to_string()),
-            };
+        if !auto.is_enabled()? {
+            if let Err(e) = auto.enable() {
+                log::warn!("Failed to enable auto-launch: {}", e);
+            }
+        }
+
+        // Create UI
+        let ui = MainWindow::new()?;
+        
+        // Create a second hidden window to keep the event loop alive when the main window is hidden
+        let _keep_alive = MainWindow::new()?;
+
+        // Setup System Tray
+        let tray_menu = Menu::new();
+        let show_item = MenuItem::new("Show Manager", true, None);
+        let quit_item = MenuItem::new("Exit", true, None);
+        
+        tray_menu.append_items(&[
+            &show_item,
+            &PredefinedMenuItem::separator(),
+            &quit_item,
+        ])?;
+
+        let icon = load_tray_icon();
+
+        let tray_icon = TrayIconBuilder::new()
+            .with_menu(Box::new(tray_menu))
+            .with_tooltip("Nexora Printer Manager")
+            .with_icon(icon)
+            .build()?;
+        
+        _tray_icon_handle = Some(tray_icon);
+
+        // Start HTTP server
+        let printer_manager_clone = Arc::clone(&printer_manager);
+        tokio::spawn(async move {
+            if let Err(e) = http_server::start_server(printer_manager_clone, 8080).await {
+                log::error!("HTTP server error: {}", e);
+            } else {
+                log::info!("HTTP server started on port 8080");
+            }
+        });
+
+        // Handle Tray Events
+        let ui_weak = ui.as_weak();
+        let show_id = show_item.id().clone();
+        let quit_id = quit_item.id().clone();
+        
+        std::thread::spawn(move || {
+            let menu_channel = MenuEvent::receiver();
+            loop {
+                if let Ok(event) = menu_channel.recv() {
+                    if event.id == show_id {
+                        let ui_weak_clone = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak_clone.upgrade() {
+                                log::info!("Restoring window from tray");
+                                ui.show().unwrap();
+                            }
+                        });
+                    } else if event.id == quit_id {
+                        log::info!("Exiting application via tray menu");
+                        let _ = slint::invoke_from_event_loop(|| {
+                            slint::quit_event_loop().unwrap();
+                        });
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Handle Window Close (Minimize to Tray)
+        {
+            let ui_handle = ui.as_weak();
             
-            let mut manager = manager.lock().unwrap();
+            ui.window().on_close_requested(move || {
+                if let Some(ui) = ui_handle.upgrade() {
+                    log::info!("Close requested: hiding window to tray");
+                    ui.hide().unwrap();
+                    CloseRequestResponse::KeepWindowShown
+                } else {
+                    CloseRequestResponse::HideWindow
+                }
+            });
+        }
+
+        // Load saved configuration
+        if let Ok(Some(config)) = load_config() {
+            ui.set_selected_connection_type(config.connection_type.clone().into());
+            ui.set_selected_device(config.device_path.clone().into());
+            ui.set_status_message("Configuration loaded successfully".into());
+            log::info!("Loaded saved configuration");
+        }
+
+        if !minimized {
+            ui.show()?;
+        }
+
+        // Scan devices callback
+        {
+            let ui_handle = ui.as_weak();
+            ui.on_scan_devices(move || {
+                let ui = ui_handle.unwrap();
+                ui.set_is_loading(true);
+                ui.set_status_message("Scanning for devices...".into());
+                
+                let devices = scan_available_devices();
+                
+                let device_models: Vec<Device> = devices.into_iter().collect();
+                let model_array = std::rc::Rc::new(slint::VecModel::from(device_models));
+                ui.set_available_devices(model_array.into());
+                
+                ui.set_is_loading(false);
+                ui.set_status_message(format!("Found {} device(s)", ui.get_available_devices().row_count()).into());
+                
+                log::info!("Device scan completed");
+            });
+        }
+
+        // Connect printer callback
+        {
+            let ui_handle = ui.as_weak();
+            let manager = Arc::clone(&printer_manager);
             
-            match manager.connect(config.clone()) {
-                Ok(_) => {
+            ui.on_connect_printer(move |conn_type, device| {
+                let ui = ui_handle.unwrap();
+                ui.set_is_loading(true);
+                ui.set_status_message("Connecting to printer...".into());
+                
+                // Load current config to keep store name, etc. if they exist
+                let current_config = load_config().ok().flatten();
+
+                let config = PrinterConfig {
+                    connection_type: conn_type.to_string(),
+                    device_path: device.to_string(),
+                    store_name: current_config.as_ref().map(|c| c.store_name.clone()).unwrap_or_else(|| "Nexora POS".to_string()),
+                    store_address: current_config.as_ref().map(|c| c.store_address.clone()).unwrap_or_else(|| "Main Branch".to_string()),
+                    footer_message: current_config.as_ref().map(|c| c.footer_message.clone()).unwrap_or_else(|| "Thank you for your visit!".to_string()),
+                };
+                
+                let mut manager = manager.lock().unwrap();
+                
+                if let Err(e) = manager.connect(config.clone()) {
+                    ui.set_is_connected(false);
+                    ui.set_status_message(format!("✗ Connection failed: {}", e).into());
+                    log::error!("Connection failed: {}", e);
+                } else {
                     ui.set_is_connected(true);
                     ui.set_status_message("✓ Printer connected successfully!".into());
                     
@@ -779,88 +940,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         log::warn!("Failed to save config: {}", e);
                     }
                 }
-                Err(e) => {
-                    ui.set_is_connected(false);
-                    ui.set_status_message(format!("✗ Connection failed: {}", e).into());
-                    log::error!("Connection failed: {}", e);
-                }
-            }
-            
-            ui.set_is_loading(false);
-        });
-    }
+                
+                ui.set_is_loading(false);
+            });
+        }
 
-    // Disconnect printer callback
-    {
-        let ui_handle = ui.as_weak();
-        let manager = Arc::clone(&printer_manager);
-        
-        ui.on_disconnect_printer(move || {
-            let ui = ui_handle.unwrap();
-            let mut manager = manager.lock().unwrap();
-            manager.disconnect();
-            ui.set_is_connected(false);
-            ui.set_status_message("Printer disconnected".into());
-        });
-    }
+        // Disconnect printer callback
+        {
+            let ui_handle = ui.as_weak();
+            let manager = Arc::clone(&printer_manager);
+            
+            ui.on_disconnect_printer(move || {
+                let ui = ui_handle.unwrap();
+                let mut manager = manager.lock().unwrap();
+                manager.disconnect();
+                ui.set_is_connected(false);
+                ui.set_status_message("Printer disconnected".into());
+            });
+        }
 
-    // Test print callback
-    {
-        let ui_handle = ui.as_weak();
-        let manager = Arc::clone(&printer_manager);
-        
-        ui.on_test_print(move || {
-            let ui = ui_handle.unwrap();
-            ui.set_is_loading(true);
-            ui.set_status_message("Printing test page...".into());
+        // Test print callback
+        {
+            let ui_handle = ui.as_weak();
+            let manager = Arc::clone(&printer_manager);
             
-            let mut manager = manager.lock().unwrap();
-            
-            match manager.print_test() {
-                Ok(_) => {
-                    ui.set_status_message("✓ Test page printed successfully!".into());
-                }
-                Err(e) => {
+            ui.on_test_print(move || {
+                let ui = ui_handle.unwrap();
+                ui.set_is_loading(true);
+                ui.set_status_message("Printing test page...".into());
+                
+                let mut manager = manager.lock().unwrap();
+                
+                if let Err(e) = manager.print_test() {
                     ui.set_status_message(format!("✗ Print failed: {}", e).into());
                     log::error!("Test print failed: {}", e);
+                } else {
+                    ui.set_status_message("✓ Test page printed successfully!".into());
                 }
-            }
+                
+                ui.set_is_loading(false);
+            });
+        }
+
+        // Save settings callback
+        {
+            let ui_handle = ui.as_weak();
             
-            ui.set_is_loading(false);
+            ui.on_save_settings(move || {
+                let ui = ui_handle.unwrap();
+                
+                // Load current config to keep store name, etc. if they exist
+                let current_config = load_config().ok().flatten();
+
+                let config = PrinterConfig {
+                    connection_type: ui.get_selected_connection_type().to_string(),
+                    device_path: ui.get_selected_device().to_string(),
+                    store_name: current_config.as_ref().map(|c| c.store_name.clone()).unwrap_or_else(|| "Nexora POS".to_string()),
+                    store_address: current_config.as_ref().map(|c| c.store_address.clone()).unwrap_or_else(|| "Main Branch".to_string()),
+                    footer_message: current_config.as_ref().map(|c| c.footer_message.clone()).unwrap_or_else(|| "Thank you for your visit!".to_string()),
+                };
+                
+                if let Err(e) = save_config(&config) {
+                     ui.set_status_message(format!("✗ Failed to save: {}", e).into());
+                     log::error!("Save failed: {}", e);
+                 } else {
+                     ui.set_status_message("✓ Settings saved successfully!".into());
+                 }
+            });
+        }
+
+        // Run the application
+        let _dummy_timer = slint::Timer::default();
+        _dummy_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(3600), || {
+            log::debug!("Heartbeat to keep event loop alive");
         });
+
+        slint::run_event_loop()?;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }.await;
+
+    if let Err(e) = result {
+        log::error!("Application error: {}", e);
+        return Err(e);
     }
 
-    // Save settings callback
-    {
-        let ui_handle = ui.as_weak();
-        
-        ui.on_save_settings(move || {
-            let ui = ui_handle.unwrap();
-            
-            // Load current config to keep store name, etc. if they exist
-            let current_config = load_config().ok().flatten();
-
-            let config = PrinterConfig {
-                connection_type: ui.get_selected_connection_type().to_string(),
-                device_path: ui.get_selected_device().to_string(),
-                store_name: current_config.as_ref().map(|c| c.store_name.clone()).unwrap_or_else(|| "Nexora POS".to_string()),
-                store_address: current_config.as_ref().map(|c| c.store_address.clone()).unwrap_or_else(|| "Main Branch".to_string()),
-                footer_message: current_config.as_ref().map(|c| c.footer_message.clone()).unwrap_or_else(|| "Thank you for your visit!".to_string()),
-            };
-            
-            match save_config(&config) {
-                Ok(_) => {
-                    ui.set_status_message("✓ Settings saved successfully!".into());
-                }
-                Err(e) => {
-                    ui.set_status_message(format!("✗ Failed to save: {}", e).into());
-                    log::error!("Save failed: {}", e);
-                }
-            }
-        });
-    }
-
-    // Run the application
-    ui.run()?;
     Ok(())
 }

@@ -579,10 +579,56 @@ impl TemplateRenderer {
                     commands.push(PrintCommand::Feed(lines as u8));
                 }
             }
-            Element::Logo(_) => {
-                // Logo rendering would require image processing
-                log::warn!("Logo rendering not yet implemented");
+            Element::Logo(e) => {
+    if self.should_render(&e.condition, data) {
+        // source must be a base64 string stored in a custom data field,
+        // or a literal base64 string on the element itself.
+        let source = match &e.source {
+            Some(s) => {
+                // If it looks like a variable reference {{logo}} resolve it
+                if s.starts_with("{{") && s.ends_with("}}") {
+                    let var_name = s.trim_start_matches("{{").trim_end_matches("}}");
+                    self.get_variable_value(var_name, data)
+                } else {
+                    s.clone()
+                }
             }
+            None => String::new(),
+        };
+ 
+        if source.is_empty() {
+            log::warn!("Logo element has no source data — skipping");
+        } else {
+            // paper_width field on TemplateRenderer is in characters (48 / 32 etc.)
+            // but image_to_escpos works in dots. Convert: dots = chars * 12 is a
+            // rough heuristic; better to pass paper_width_dots explicitly via
+            // the template's paper_width field (already in dots for image use).
+            //
+            // If your template paper_width is in characters (e.g. 48),
+            // multiply by 12 to get dots (48 * 12 = 576 for 80mm paper).
+            let paper_width_dots = self.paper_width * 12;
+ 
+            // max_width from LogoElement: stored as dots, or None = full width
+            let max_width_dots = e.max_width;
+ 
+            let align = e.align.as_deref().unwrap_or("center");
+ 
+            match crate::image_print::image_to_escpos(
+                &source,
+                paper_width_dots,
+                max_width_dots,
+                align,
+            ) {
+                Ok(bytes) => {
+                    commands.push(PrintCommand::Image(bytes));
+                }
+                Err(err) => {
+                    log::error!("Logo image conversion failed: {}", err);
+                }
+            }
+        }
+    }
+}
             Element::Box(e) => {
                 if self.should_render(&e.condition, data) {
                     self.build_box_commands(commands, e, data)?;
@@ -1529,6 +1575,7 @@ pub enum PrintCommand {
         width: u8,
         show_text: bool,
     },
+    Image(Vec<u8>),
 }
 
 // ==================== Template Loading ====================

@@ -78,6 +78,14 @@ pub struct PreviewTemplateRequest {
     pub data: ReceiptData,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PrintImageRequest {
+    /// Base64 image, with or without `data:image/...;base64,` prefix.
+    pub image: String,
+    /// Optional: overrides the manager's paper_width. Defaults to 576 (80 mm).
+    pub paper_width_dots: Option<u32>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PreviewResponse {
     pub success: bool,
@@ -426,6 +434,84 @@ async fn preview_template(
     }
 }
 
+/// Print a base64-encoded image (PNG/JPEG), scaled to fit paper width.
+// async fn print_image(
+//     State(state): State<Arc<AppState>>,
+//     Json(request): Json<PrintImageRequest>,
+// ) -> Result<Json<ApiResponse>, StatusCode> {
+//     let mut manager = state.printer_manager.lock().unwrap();
+
+//     if !manager.is_connected() {
+//         return Ok(Json(ApiResponse {
+//             success: false,
+//             message: "Printer not connected".to_string(),
+//         }));
+//     }
+
+//     let paper_width = request.paper_width_dots.unwrap_or(576);
+
+//     let escpos_bytes = match crate::image_print::image_to_escpos(&request.image, paper_width) {
+//         Ok(bytes) => bytes,
+//         Err(e) => {
+//             log::error!("Image conversion failed: {}", e);
+//             return Ok(Json(ApiResponse {
+//                 success: false,
+//                 message: format!("Image conversion failed: {}", e),
+//             }));
+//         }
+//     };
+
+//     match manager.print_raw(&escpos_bytes) {
+//         Ok(_) => Ok(Json(ApiResponse {
+//             success: true,
+//             message: "Image printed successfully".to_string(),
+//         })),
+//         Err(e) => {
+//             log::error!("Image print failed: {}", e);
+//             Ok(Json(ApiResponse {
+//                 success: false,
+//                 message: format!("Image print failed: {}", e),
+//             }))
+//         }
+//     }
+// }
+
+// pub async fn preview_image(
+//     Json(request): Json<PrintImageRequest>,
+// ) -> Result<Json<PreviewResponse>, StatusCode> {
+//     let paper_width = request.paper_width_dots.unwrap_or(576);
+
+//     // Call our new helper function to generate the ASCII preview and metadata
+//     match crate::image_print::generate_image_preview(&request.image, paper_width) {
+//         Ok((ascii_art, target_w, target_h, estimated_bytes)) => {
+            
+//             // Build pseudo-commands to explain what the printer will do
+//             let commands = vec![
+//                 format!("Action: Process Base64 Image"),
+//                 format!("Result: Resized to {}x{} dots (1-bit Monochrome)", target_w, target_h),
+//                 format!("Command: [1D 76 30 ...] GS v 0 (Print Raster Bit Image)"),
+//                 format!("Payload Size: {} bytes", estimated_bytes),
+//                 format!("Command: [1B 64 03] ESC d 3 (Feed 3 lines)"),
+//                 format!("Command: [1D 56 42 00] GS V 66 0 (Partial Cut)"),
+//             ];
+
+//             Ok(Json(PreviewResponse {
+//                 success: true,
+//                 commands,
+//                 text_preview: ascii_art,
+//             }))
+//         }
+//         Err(e) => {
+//             log::error!("Image preview failed: {}", e);
+//             Ok(Json(PreviewResponse {
+//                 success: false,
+//                 commands: vec![],
+//                 text_preview: format!("Error generating image preview: {}", e),
+//             }))
+//         }
+//     }
+// }
+
 // ==================== Server Setup ====================
 
 /// Start HTTP server in background
@@ -454,9 +540,12 @@ pub async fn start_server(
         .route("/template/{id}", get(get_template))
         // Template-based printing
         .route("/print-template", post(print_with_template))
+        // Image printing
+        // .route("/print-image", post(print_image))
         .route("/test-print", post(test_print))
         // Preview (no printer needed)
         .route("/preview-template", post(preview_template))
+        // .route("/preview-image", post(preview_image))
         // Cache management
         .route("/cache", delete(clear_cache))
         .layer(cors)
