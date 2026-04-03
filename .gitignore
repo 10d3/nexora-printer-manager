@@ -1,3 +1,6 @@
 target
 *.ps1
 data
+build_error*.txt
+*.exe
+slint_search.json

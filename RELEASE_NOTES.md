@@ -1,6 +1,17 @@
-## Nexora Printer Manager v1.4.0
+## Nexora Printer Manager v1.4.1
 
 ### What's New
+- **Professional Setup Installer**: Added a robust Windows Setup Executable (`nexora-printer-manager-setup.exe`) powered by Inno Setup.
+  - Automatically installs to `Program Files`.
+  - Creates Start Menu and Desktop shortcuts.
+  - Generates an uninstaller in Add/Remove Programs.
+- **True Background Execution**: The application now seamlessly minimizes and stays running strictly in the system tray when closed, acting as a background daemon without appearing in the taskbar. 
+  - Bypassed Slint event loop quitting limitations using native Win32 `HWND` extraction and `ShowWindow` for flawless background behavior.
+- **Boot Autostart**: Integrated Windows Autostart capability toggleable directly from the System Tray menu.
+- **CI/CD Integration**: Setup executables are now automatically compiled & attached to GitHub Releases via GitHub Actions.
+- **File Logging**: Output logs are now correctly captured in local Application Data instead of dumping into an invisible console.
+### Previous Updates
+
 - **Logo Printing**: Added full image printing support for ESC/POS thermal printers.
   Receipts and invoices can now include a business logo printed directly at the
   top of the page.
@@ -37,9 +48,11 @@
 - **Fix:** Removed invalid package dependencies (`windows-subsystem`) causing deployment issues
 
 **Downloads:**
-- `nexora-printer-manager.exe` - Windows x64 executable
+- `nexora-printer-manager-setup.exe` - Windows Installer (Recommended)
+- `nexora-printer-manager.exe` - Windows x64 executable (Portable)
 
 ### Installation
-1. Download `nexora-printer-manager.exe`
-2. Run the application
-3. The HTTP server starts on port 8080
+1. Download `nexora-printer-manager-setup.exe` and follow the installation wizard.
+2. The application will launch safely in the background (visible in the System Tray).
+3. The HTTP server starts automatically on port `8080`.
+4. Right-click the printer icon in the taskbar tray to Show the Manager to configure devices or Toggle Launch at Startup.

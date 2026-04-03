@@ -44,6 +44,19 @@ jobs:
           path: target/release/nexora-printer-manager.exe
           retention-days: 30
 
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Build Installer
+        run: iscc installer/nexora-installer.iss
+
+      - name: Upload Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexora-installer
+          path: installer/Output/nexora-printer-manager-setup.exe
+          retention-days: 30
+
   create-release:
     needs: build-windows
     runs-on: ubuntu-latest
@@ -58,12 +71,20 @@ jobs:
           name: nexora-printer-manager-windows
           path: ./artifacts
 
+      - name: Download Installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nexora-installer
+          path: ./artifacts
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           name: Nexora Printer Manager ${{ github.ref_name }}
           body_path: RELEASE_NOTES.md
-          files: ./artifacts/nexora-printer-manager.exe
+          files: |
+            ./artifacts/nexora-printer-manager.exe
+            ./artifacts/nexora-printer-manager-setup.exe
           draft: false
           prerelease: false
         env:

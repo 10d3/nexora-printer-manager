@@ -1,7 +1,7 @@
 // Nexora POS Printer Manager
 // Complete ESC/POS printer management with USB, Network, and LPT support
 
-// #![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -10,9 +10,9 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     TrayIconBuilder,
 };
-use auto_launch::AutoLaunchBuilder;
 use std::env;
 
+mod autostart;
 mod http_server;
 mod template_render;
 mod image_print;
@@ -760,7 +760,21 @@ fn load_tray_icon() -> tray_icon::Icon {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
-    env_logger::init();
+    let mut log_dir = directories::ProjectDirs::from("com", "nexora", "printer-manager")
+        .map(|d| d.config_dir().to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    std::fs::create_dir_all(&log_dir).unwrap_or_default();
+    let log_file = log_dir.join("nexora.log");
+
+    simplelog::WriteLogger::init(
+        simplelog::LevelFilter::Info,
+        simplelog::Config::default(),
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_file)
+            .unwrap(),
+    ).unwrap_or_default();
     
     // Create printer manager
     let printer_manager = Arc::new(Mutex::new(PrinterManager::new()));
@@ -775,21 +789,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         log::info!("Starting Nexora Printer Manager v1.4.0");
 
         // Setup Auto-launch
-        let app_exe = env::current_exe()?;
-        let app_path = app_exe.to_str().unwrap_or_default();
-        log::info!("App path: {}", app_path);
-        
-        let auto = AutoLaunchBuilder::new()
-            .set_app_name("Nexora Printer Manager")
-            .set_app_path(app_path)
-            .set_args(&["--minimized"])
-            .build()?;
-
-        if !auto.is_enabled()? {
-            if let Err(e) = auto.enable() {
-                log::warn!("Failed to enable auto-launch: {}", e);
-            }
+        let autostart = autostart::Autostart::new();
+        // Setup default autostart if first time, or rely on installer
+        if !autostart.is_enabled() && false { // We don't force it here, leave to user or installer
+            let _ = autostart.enable();
         }
+        let autostart_enabled = autostart.is_enabled();
+
 
         // Create UI
         let ui = MainWindow::new()?;
@@ -800,10 +806,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Setup System Tray
         let tray_menu = Menu::new();
         let show_item = MenuItem::new("Show Manager", true, None);
+        let autostart_item = MenuItem::new("Toggle Launch at Startup", true, None);
         let quit_item = MenuItem::new("Exit", true, None);
         
         tray_menu.append_items(&[
             &show_item,
+            &autostart_item,
             &PredefinedMenuItem::separator(),
             &quit_item,
         ])?;
@@ -831,10 +839,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Handle Tray Events
         let ui_weak = ui.as_weak();
         let show_id = show_item.id().clone();
+        let autostart_id = autostart_item.id().clone();
         let quit_id = quit_item.id().clone();
         
         std::thread::spawn(move || {
             let menu_channel = MenuEvent::receiver();
+            let autostart = autostart::Autostart::new();
+            
             loop {
                 if let Ok(event) = menu_channel.recv() {
                     if event.id == show_id {
@@ -842,9 +853,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = ui_weak_clone.upgrade() {
                                 log::info!("Restoring window from tray");
+                                #[cfg(target_os = "windows")]
+                                {
+                                    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, ShowWindow, SW_SHOW};
+                                    let title: Vec<u16> = "Nexora Printer Manager\0".encode_utf16().collect();
+                                    let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+                                    if hwnd != std::ptr::null_mut() {
+                                        unsafe { ShowWindow(hwnd, SW_SHOW) };
+                                    }
+                                }
                                 ui.show().unwrap();
                             }
                         });
+                    } else if event.id == autostart_id {
+                        let _ = autostart.toggle();
                     } else if event.id == quit_id {
                         log::info!("Exiting application via tray menu");
                         let _ = slint::invoke_from_event_loop(|| {
@@ -862,9 +884,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             ui.window().on_close_requested(move || {
                 if let Some(ui) = ui_handle.upgrade() {
-                    log::info!("Close requested: hiding window to tray");
-                    ui.hide().unwrap();
+                    log::info!("Close requested: hiding window natively to tray");
+                    
+                    #[cfg(target_os = "windows")]
+                    {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, ShowWindow, SW_HIDE};
+                        let title: Vec<u16> = "Nexora Printer Manager\0".encode_utf16().collect();
+                        let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+                        if hwnd != std::ptr::null_mut() {
+                            unsafe { ShowWindow(hwnd, SW_HIDE) };
+                        }
+                    }
+                    
+                    // Do NOT call `ui.hide()` here, as it triggers Slint's automatic quit 
+                    // when the visible window count reaches zero.
                     CloseRequestResponse::KeepWindowShown
+
                 } else {
                     CloseRequestResponse::HideWindow
                 }
