@@ -63,7 +63,7 @@ impl Tray {
 }
 
 fn load_icon() -> tray_icon::Icon {
-    let bytes = include_bytes!("../assets/favicon.ico");
+    let bytes = include_bytes!("../assets/favicon.png");
     let img = image::load_from_memory(bytes).expect("Failed to load tray icon");
     let (w, h) = image::GenericImageView::dimensions(&img);
     let rgba = img.into_rgba8().into_raw();

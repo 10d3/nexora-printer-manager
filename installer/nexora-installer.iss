@@ -1,6 +1,6 @@
 [Setup]
 AppName=Nexora Printer Manager
-AppVersion=1.3.0
+AppVersion=1.4.2
 AppPublisher=Nexora Team
 AppPublisherURL=https://github.com/nexora/printer-manager
 DefaultDirName={autopf}\Nexora\Printer Manager
@@ -9,7 +9,7 @@ OutputDir=Output
 OutputBaseFilename=nexora-printer-manager-setup
 Compression=lzma2
 SolidCompression=yes
-; SetupIconFile=..\assets\favicon.ico
+SetupIconFile=..\assets\favicon.png
 UninstallDisplayIcon={app}\nexora-printer-manager.exe
 ArchitecturesInstallIn64BitMode=x64
 

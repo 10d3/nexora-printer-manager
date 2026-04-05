@@ -1,15 +1,16 @@
-// Nexora POS Printer Manager - Main UI
+// Nexora POS Printer Manager - Refined UI
+// Design System: Minimalist, Professional, Clean
 import {
     Button,
-    ComboBox,
     LineEdit,
     ScrollView,
     VerticalBox,
     HorizontalBox,
-    GroupBox,
-    CheckBox,
-    StandardButton,
 } from "std-widgets.slint";
+
+// ============================================
+// DESIGN TOKENS
+// ============================================
 
 // Device structure
 export struct Device {
@@ -25,20 +26,452 @@ export struct PrinterStatus {
     connection-type: string,
 }
 
+// ============================================
+// REUSABLE COMPONENTS
+// ============================================
+
+// Icon component using SF Symbols style
+component Icon inherits Text {
+    in property <string> icon;
+    in property <length> size: 20px;
+    in property <color> icon-color: #64748b;
+
+    text: icon;
+    font-size: size;
+    color: icon-color;
+    horizontal-alignment: center;
+    vertical-alignment: center;
+}
+
+// Section Title
+component SectionTitle inherits Text {
+    in property <string> label;
+
+    text: label;
+    color: #0f172a;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+// Connection Type Card
+component ConnectionCard inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> selected: false;
+    in property <bool> disabled: false;
+
+    callback clicked();
+
+    width: 100%;
+    height: 56px;
+    background: selected ? #0f172a : #ffffff;
+    border-radius: 10px;
+    border-width: selected ? 0px : 1px;
+    border-color: #e2e8f0;
+
+    animate background {
+        duration: 150ms;
+        easing: ease-out;
+    }
+    animate border-color {
+        duration: 150ms;
+        easing: ease-out;
+    }
+
+    HorizontalBox {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 12px;
+
+        Icon {
+            icon: icon;
+            size: 18px;
+            icon-color: selected ? #ffffff : #64748b;
+            width: 24px;
+        }
+
+        Text {
+            text: label;
+            color: selected ? #ffffff : #0f172a;
+            font-size: 14px;
+            font-weight: selected ? 600 : 500;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+
+        if selected: Rectangle {
+            width: 20px;
+            height: 20px;
+            background: #22c55e;
+            border-radius: 10px;
+
+            Text {
+                text: "✓";
+                color: white;
+                font-size: 12px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: disabled ? default : pointer;
+        clicked => {
+            if !disabled {
+                clicked();
+            }
+        }
+    }
+}
+
+// Device List Item
+component DeviceItem inherits Rectangle {
+    in property <string> path;
+    in property <string> description;
+    in property <string> device-type;
+    in property <bool> selected: false;
+
+    callback clicked();
+
+    height: 52px;
+    background: selected ? #f0f9ff : #ffffff;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: selected ? #0ea5e9 : #f1f5f9;
+
+    animate background { duration: 120ms; }
+    animate border-color { duration: 120ms; }
+
+    HorizontalBox {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 12px;
+
+        Rectangle {
+            width: 32px;
+            height: 32px;
+            background: selected ? #e0f2fe : #f8fafc;
+            border-radius: 8px;
+
+            Text {
+                text: device-type == "USB" ? "⌁" : device-type == "Network" ? "◉" : "▣";
+                color: selected ? #0284c7 : #94a3b8;
+                font-size: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        VerticalBox {
+            spacing: 2px;
+            alignment: center;
+
+            Text {
+                text: path;
+                color: #0f172a;
+                font-size: 13px;
+                font-weight: 500;
+            }
+
+            Text {
+                text: description;
+                color: #94a3b8;
+                font-size: 11px;
+            }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+
+        if selected: Rectangle {
+            width: 6px;
+            height: 6px;
+            background: #0ea5e9;
+            border-radius: 3px;
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            clicked();
+        }
+    }
+}
+
+// Primary Button
+component PrimaryButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> disabled: false;
+    in property <bool> loading: false;
+    in property <color> bg: #0f172a;
+
+    callback clicked();
+
+    height: 44px;
+    background: disabled ? #e2e8f0 : bg;
+    border-radius: 10px;
+
+    animate background { duration: 150ms; }
+
+    HorizontalBox {
+        padding-left: 20px;
+        padding-right: 20px;
+        spacing: 8px;
+        alignment: center;
+
+        if loading: Text {
+            text: "◌";
+            color: white;
+            font-size: 14px;
+        }
+
+        Text {
+            text: loading ? "Please wait..." : label;
+            color: disabled ? #94a3b8 : white;
+            font-size: 14px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: disabled ? default : pointer;
+        clicked => {
+            if !disabled && !loading {
+                clicked();
+            }
+        }
+    }
+}
+
+// Secondary Button
+component SecondaryButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> disabled: false;
+
+    callback clicked();
+
+    height: 44px;
+    background: #ffffff;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: #e2e8f0;
+
+    animate background { duration: 150ms; }
+    animate border-color { duration: 150ms; }
+
+    Text {
+        text: label;
+        color: disabled ? #94a3b8 : #0f172a;
+        font-size: 14px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    TouchArea {
+        mouse-cursor: disabled ? default : pointer;
+        clicked => {
+            if !disabled {
+                clicked();
+            }
+        }
+    }
+}
+
+// Status Badge
+component StatusBadge inherits Rectangle {
+    in property <bool> active: false;
+    in property <string> label;
+
+    width: self.preferred-width;
+    height: 28px;
+    background: active ? #dcfce7 : #f1f5f9;
+    border-radius: 14px;
+    padding-left: 12px;
+    padding-right: 12px;
+
+    HorizontalBox {
+        spacing: 6px;
+        alignment: center;
+
+        Rectangle {
+            width: 6px;
+            height: 6px;
+            background: active ? #22c55e : #94a3b8;
+            border-radius: 3px;
+        }
+
+        Text {
+            text: label;
+            color: active ? #166534 : #64748b;
+            font-size: 12px;
+            font-weight: 500;
+        }
+    }
+}
+
+// Info Card
+component InfoCard inherits Rectangle {
+    in property <string> title;
+    in property <string> content;
+
+    background: #fafafa;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: #f1f5f9;
+
+    VerticalBox {
+        padding: 18px;
+        spacing: 10px;
+
+        Text {
+            text: title;
+            color: #0f172a;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        Text {
+            text: content;
+            color: #64748b;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// Filter Chip
+component FilterChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <int> count: 0;
+
+    callback clicked();
+
+    width: self.preferred-width;
+    height: 32px;
+    background: active ? #0f172a : #ffffff;
+    border-radius: 16px;
+    border-width: active ? 0px : 1px;
+    border-color: #e2e8f0;
+    padding-left: 14px;
+    padding-right: 14px;
+
+    animate background { duration: 120ms; }
+    animate border-color { duration: 120ms; }
+
+    HorizontalBox {
+        spacing: 6px;
+        alignment: center;
+
+        Text {
+            text: label;
+            color: active ? #ffffff : #64748b;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        if count > 0: Rectangle {
+            width: 18px;
+            height: 18px;
+            background: active ? #374151 : #f1f5f9;
+            border-radius: 9px;
+
+            Text {
+                text: count;
+                color: active ? #d1d5db : #64748b;
+                font-size: 10px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            clicked();
+        }
+    }
+}
+
+// Toast Notification
+component Toast inherits Rectangle {
+    in property <string> message;
+    in property <string> type: "info"; // success, error, warning, info
+    
+    property <color> bg-color: type == "success" ? #f0fdf4 : type == "error" ? #fef2f2 : type == "warning" ? #fffbeb : #f0f9ff;
+    property <color> border-clr: type == "success" ? #bbf7d0 : type == "error" ? #fecaca : type == "warning" ? #fde68a : #bae6fd;
+    property <color> text-clr: type == "success" ? #166534 : type == "error" ? #991b1b : type == "warning" ? #92400e : #0369a1;
+    property <string> icon: type == "success" ? "✓" : type == "error" ? "✕" : type == "warning" ? "!" : "i";
+
+    height: 48px;
+    background: bg-color;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: border-clr;
+
+    HorizontalBox {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 10px;
+
+        Rectangle {
+            width: 22px;
+            height: 22px;
+            background: border-clr;
+            border-radius: 11px;
+
+            Text {
+                text: icon;
+                color: text-clr;
+                font-size: 11px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: message;
+            color: text-clr;
+            font-size: 13px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// ============================================
+// MAIN WINDOW
+// ============================================
+
 export component MainWindow inherits Window {
     title: "Nexora Printer Manager";
-    preferred-width: 900px;
-    preferred-height: 700px;
-    min-width: 800px;
-    min-height: 600px;
-    
+    preferred-width: 860px;
+    preferred-height: 640px;
+    min-width: 760px;
+    min-height: 560px;
+    background: #ffffff;
+
     // Callbacks for Rust backend
     callback scan-devices();
     callback connect-printer(string, string);
     callback disconnect-printer();
     callback test-print();
     callback save-settings();
-    
+
     // Properties
     in-out property <[Device]> available-devices: [];
     in-out property <bool> is-connected: false;
@@ -46,501 +479,429 @@ export component MainWindow inherits Window {
     in-out property <string> status-message: "";
     in-out property <string> selected-connection-type: "USB";
     in-out property <string> selected-device: "";
+    in-out property <string> device-filter: "All"; // All, USB, Network, LPT
     
-    // Color scheme - Nexora brand colors
-    property <color> primary-color: #2563eb;
-    property <color> success-color: #16a34a;
-    property <color> danger-color: #dc2626;
-    property <color> warning-color: #ea580c;
-    property <color> bg-color: #f8fafc;
-    property <color> card-bg: #ffffff;
-    property <color> text-primary: #0f172a;
-    property <color> text-secondary: #64748b;
-    property <color> border-color: #e2e8f0;
-    background: bg-color;
-    VerticalBox {
+    // Derived properties for toast type
+    property <string> toast-type: 
+        status-message == "" ? "info" : (status-message == "✓ Printer connected successfully!" || status-message == "✓ Test page printed successfully!" || status-message == "✓ Settings saved successfully!") ? "success" : (status-message == "✗ Print failed: Failed to write to printer") ? "error" : "warning";
+
+    HorizontalBox {
         padding: 0px;
         spacing: 0px;
-        
-        // ========== HEADER ==========
+
+        // ========== LEFT SIDEBAR ==========
         Rectangle {
-            height: 80px;
-            background: @linear-gradient(135deg, #1e40af 0%, #2563eb 100%);
-            HorizontalBox {
-                padding: 20px;
-                spacing: 15px;
-                
-                // Logo - Nexora branding
-                Image {
-                    source: @image-url("../assets/nexora.png");
-                    width: 140px;
-                    height: 48px;
-                    image-fit: contain;
-                }
+            width: 240px;
+            background: #fafafa;
+            border-width: 0px;
 
+            VerticalBox {
+                padding: 24px;
+                spacing: 0px;
+
+                // Logo Area
                 VerticalBox {
-                    alignment: start;
-                    spacing: 2px;
-                    Text {
-                        text: "Printer Manager";
-                        color: white;
-                        font-size: 24px;
-                        font-weight: 700;
-                    }
+                    spacing: 4px;
+                    padding-bottom: 32px;
 
-                    Text {
-                        text: "ESC/POS Setup & Configuration";
-                        color: #93c5fd;
-                        font-size: 13px;
-                    }
-                }
-
-                Rectangle {
-                    horizontal-stretch: 1;
-                }
-                
-                // Status indicator
-                Rectangle {
-                    width: 150px;
-                    height: 40px;
-                    background: is-connected ? success-color : #334155;
-                    border-radius: 20px;
                     HorizontalBox {
-                        padding: 10px;
-                        spacing: 8px;
+                        spacing: 10px;
+
                         Rectangle {
-                            width: 10px;
-                            height: 10px;
-                            background: white;
-                            border-radius: 5px;
-                            animate background {
-                                duration: 1s;
-                                iteration-count: -1;
+                            width: 36px;
+                            height: 36px;
+                            background: #0f172a;
+                            border-radius: 10px;
+
+                            Text {
+                                text: "N";
+                                color: white;
+                                font-size: 18px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
                             }
                         }
 
-                        Text {
-                            text: is-connected ? "Connected" : "Disconnected";
-                            color: white;
-                            font-size: 14px;
-                            font-weight: 600;
-                            vertical-alignment: center;
+                        VerticalBox {
+                            spacing: 0px;
+                            alignment: center;
+
+                            Text {
+                                text: "Nexora";
+                                color: #0f172a;
+                                font-size: 18px;
+                                font-weight: 700;
+                            }
+
+                            Text {
+                                text: "Printer Manager";
+                                color: #64748b;
+                                font-size: 11px;
+                            }
                         }
+                    }
+                }
+
+                // Divider
+                Rectangle {
+                    height: 1px;
+                    background: #e2e8f0;
+                }
+
+                // Status Section
+                VerticalBox {
+                    padding-top: 24px;
+                    padding-bottom: 24px;
+                    spacing: 16px;
+
+                    SectionTitle {
+                        label: "STATUS";
+                    }
+
+                    StatusBadge {
+                        active: is-connected;
+                        label: is-connected ? "Connected" : "Disconnected";
+                    }
+
+                    if is-connected: VerticalBox {
+                        spacing: 8px;
+
+                        HorizontalBox {
+                            Text {
+                                text: "Device";
+                                color: #94a3b8;
+                                font-size: 12px;
+                                width: 56px;
+                            }
+
+                            Text {
+                                text: selected-device;
+                                color: #0f172a;
+                                font-size: 12px;
+                                font-weight: 500;
+                                overflow: elide;
+                            }
+                        }
+
+                        HorizontalBox {
+                            Text {
+                                text: "Type";
+                                color: #94a3b8;
+                                font-size: 12px;
+                                width: 56px;
+                            }
+
+                            Text {
+                                text: selected-connection-type;
+                                color: #0f172a;
+                                font-size: 12px;
+                                font-weight: 500;
+                            }
+                        }
+                    }
+                }
+
+                // Divider
+                Rectangle {
+                    height: 1px;
+                    background: #e2e8f0;
+                }
+
+                // Quick Actions
+                VerticalBox {
+                    padding-top: 24px;
+                    spacing: 12px;
+
+                    SectionTitle {
+                        label: "QUICK ACTIONS";
+                    }
+
+                    SecondaryButton {
+                        label: "Print Test Page";
+                        disabled: !is-connected || is-loading;
+                        clicked => {
+                            test-print();
+                        }
+                    }
+
+                    SecondaryButton {
+                        label: "Save Settings";
+                        disabled: is-loading;
+                        clicked => {
+                            save-settings();
+                        }
+                    }
+                }
+
+                // Spacer
+                Rectangle {
+                    vertical-stretch: 1;
+                }
+
+                // Footer
+                VerticalBox {
+                    spacing: 4px;
+
+                    Rectangle {
+                        height: 1px;
+                        background: #e2e8f0;
+                    }
+
+                    Text {
+                        text: "v1.4.2";
+                        color: #cbd5e1;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        padding-top: 16px;
                     }
                 }
             }
         }
-        
+
         // ========== MAIN CONTENT ==========
-        HorizontalBox {
-            padding: 0px;
-            spacing: 0px;
-            
-            // Left Panel - Setup
-            Rectangle {
-                width: 450px;
-                background: white;
-                ScrollView {
-                    viewport-width: 450px;
+        Rectangle {
+            background: #ffffff;
+
+            ScrollView {
+                VerticalBox {
+                    padding: 40px;
+                    padding-top: 48px;
+                    spacing: 32px;
+                    alignment: start;
+
+                    // Header
                     VerticalBox {
-                        padding: 30px;
-                        spacing: 25px;
-                        alignment: start;
-                        
-                        // Connection Type Section
-                        VerticalBox {
+                        spacing: 8px;
+
+                        Text {
+                            text: "Printer Setup";
+                            color: #0f172a;
+                            font-size: 28px;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: "Configure your ESC/POS thermal printer connection";
+                            color: #64748b;
+                            font-size: 15px;
+                        }
+                    }
+
+                    // Connection Type Section
+                    VerticalBox {
+                        spacing: 14px;
+
+                        SectionTitle {
+                            label: "CONNECTION TYPE";
+                        }
+
+                        HorizontalBox {
                             spacing: 12px;
-                            Text {
-                                text: "Connection Type";
-                                color: text-primary;
-                                font-size: 16px;
-                                font-weight: 700;
+
+                            ConnectionCard {
+                                icon: "⌁";
+                                label: "USB";
+                                selected: selected-connection-type == "USB";
+                                disabled: is-connected;
+                                clicked => {
+                                    selected-connection-type = "USB";
+                                }
                             }
 
-                            HorizontalBox {
-                                spacing: 10px;
-                                connection-type-usb := Rectangle {
-                                    width: 120px;
-                                    height: 80px;
-                                    background: selected-connection-type == "USB" ? primary-color : card-bg;
-                                    border-radius: 8px;
-                                    border-width: 2px;
-                                    border-color: selected-connection-type == "USB" ? primary-color : border-color;
-                                    VerticalBox {
-                                        spacing: 5px;
-                                        Text {
-                                            text: "🔌";
-                                            font-size: 24px;
-                                            horizontal-alignment: center;
-                                        }
+                            ConnectionCard {
+                                icon: "◉";
+                                label: "Network";
+                                selected: selected-connection-type == "Network";
+                                disabled: is-connected;
+                                clicked => {
+                                    selected-connection-type = "Network";
+                                }
+                            }
 
-                                        Text {
-                                            text: "USB";
-                                            color: selected-connection-type == "USB" ? white : text-primary;
-                                            font-size: 14px;
-                                            font-weight: 600;
-                                            horizontal-alignment: center;
-                                        }
-                                    }
+                            ConnectionCard {
+                                icon: "▣";
+                                label: "LPT";
+                                selected: selected-connection-type == "LPT";
+                                disabled: is-connected;
+                                clicked => {
+                                    selected-connection-type = "LPT";
+                                }
+                            }
+                        }
+                    }
 
-                                    TouchArea {
-                                        clicked => {
-                                            selected-connection-type = "USB";
-                                        }
-                                    }
+                    // Device Selection Section
+                    VerticalBox {
+                        spacing: 14px;
+
+                        HorizontalBox {
+                            SectionTitle {
+                                label: "DEVICE";
+                            }
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                            }
+
+                            Rectangle {
+                                width: 80px;
+                                height: 32px;
+                                background: is-loading ? #f1f5f9 : #0f172a;
+                                border-radius: 8px;
+
+                                Text {
+                                    text: is-loading ? "..." : "Scan";
+                                    color: is-loading ? #94a3b8 : white;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
                                 }
 
-                                connection-type-network := Rectangle {
-                                    width: 120px;
-                                    height: 80px;
-                                    background: selected-connection-type == "Network" ? primary-color : card-bg;
-                                    border-radius: 8px;
-                                    border-width: 2px;
-                                    border-color: selected-connection-type == "Network" ? primary-color : border-color;
-                                    VerticalBox {
-                                        spacing: 5px;
-                                        Text {
-                                            text: "🌐";
-                                            font-size: 24px;
-                                            horizontal-alignment: center;
-                                        }
-
-                                        Text {
-                                            text: "Network";
-                                            color: selected-connection-type == "Network" ? white : text-primary;
-                                            font-size: 14px;
-                                            font-weight: 600;
-                                            horizontal-alignment: center;
-                                        }
-                                    }
-
-                                    TouchArea {
-                                        clicked => {
-                                            selected-connection-type = "Network";
-                                        }
-                                    }
-                                }
-
-                                connection-type-lpt := Rectangle {
-                                    width: 120px;
-                                    height: 80px;
-                                    background: selected-connection-type == "LPT" ? primary-color : card-bg;
-                                    border-radius: 8px;
-                                    border-width: 2px;
-                                    border-color: selected-connection-type == "LPT" ? primary-color : border-color;
-                                    VerticalBox {
-                                        spacing: 5px;
-                                        Text {
-                                            text: "🖨️";
-                                            font-size: 24px;
-                                            horizontal-alignment: center;
-                                        }
-
-                                        Text {
-                                            text: "LPT";
-                                            color: selected-connection-type == "LPT" ? white : text-primary;
-                                            font-size: 14px;
-                                            font-weight: 600;
-                                            horizontal-alignment: center;
-                                        }
-                                    }
-
-                                    TouchArea {
-                                        clicked => {
-                                            selected-connection-type = "LPT";
+                                TouchArea {
+                                    mouse-cursor: (is-loading || is-connected) ? default : pointer;
+                                    clicked => {
+                                        if !is-loading && !is-connected {
+                                            scan-devices();
                                         }
                                     }
                                 }
                             }
                         }
-                        
-                        // Device Selection
-                        VerticalBox {
+
+                        // Device Input
+                        Rectangle {
+                            height: 48px;
+                            background: #f8fafc;
+                            border-radius: 10px;
+                            border-width: 1px;
+                            border-color: #e2e8f0;
+
+                            device-input := LineEdit {
+                                x: 14px;
+                                y: 0px;
+                                width: parent.width - 28px;
+                                height: parent.height;
+                                placeholder-text: selected-connection-type == "Network" ? "Enter IP address (e.g., 192.168.1.100)" : selected-connection-type == "LPT" ? "Enter port (e.g., LPT1)" : "Enter device path or select below";
+                                text <=> selected-device;
+                                enabled: !is-connected;
+                            }
+                        }
+
+                        // Available Devices List with Filter
+                        if available-devices.length > 0: VerticalBox {
                             spacing: 12px;
+                            padding-top: 8px;
+
+                            // Filter Header
                             HorizontalBox {
-                                spacing: 10px;
+                                spacing: 8px;
+                                alignment: start;
+
                                 Text {
-                                    text: "Printer Device";
-                                    color: text-primary;
-                                    font-size: 16px;
-                                    font-weight: 700;
+                                    text: "Available Devices";
+                                    color: #94a3b8;
+                                    font-size: 12px;
                                     vertical-alignment: center;
                                 }
 
                                 Rectangle {
-                                    horizontal-stretch: 1;
+                                    width: 8px;
                                 }
 
-                                scan-btn := Button {
-                                    text: is-loading ? "Scanning..." : "🔍 Scan";
-                                    enabled: !is-loading && !is-connected;
-                                    primary: true;
+                                // Filter Chips
+                                FilterChip {
+                                    label: "All";
+                                    active: device-filter == "All";
+                                    count: available-devices.length;
                                     clicked => {
-                                        scan-devices();
+                                        device-filter = "All";
+                                    }
+                                }
+
+                                FilterChip {
+                                    label: "USB";
+                                    active: device-filter == "USB";
+                                    clicked => {
+                                        device-filter = "USB";
+                                    }
+                                }
+
+                                FilterChip {
+                                    label: "Network";
+                                    active: device-filter == "Network";
+                                    clicked => {
+                                        device-filter = "Network";
+                                    }
+                                }
+
+                                FilterChip {
+                                    label: "LPT";
+                                    active: device-filter == "LPT";
+                                    clicked => {
+                                        device-filter = "LPT";
                                     }
                                 }
                             }
 
-                            device-input := LineEdit {
-                                placeholder-text: selected-connection-type == "Network" ? "Enter IP (e.g., 192.168.1.100)" : selected-connection-type == "LPT" ? "Enter port (e.g., LPT1)" : "Select device or enter path";
-                                text <=> selected-device;
-                                enabled: !is-connected;
-                            }
-                            
-                            // Available devices list
-                            if available-devices.length > 0: VerticalBox {
-                                spacing: 5px;
-                                Text {
-                                    text: "Found Devices:";
-                                    color: text-secondary;
-                                    font-size: 13px;
-                                }
-
-                                for device[index] in available-devices: Rectangle {
-                                    height: 40px;
-                                    background: selected-device == device.path ? #eff6ff : white;
-                                    border-radius: 6px;
-                                    border-width: 1px;
-                                    border-color: selected-device == device.path ? primary-color : border-color;
-                                    HorizontalBox {
-                                        padding: 10px;
-                                        spacing: 10px;
-                                        Text {
-                                            text: device.type == "USB" ? "🔌" : device.type == "Network" ? "🌐" : "🖨️";
-                                            font-size: 16px;
-                                            vertical-alignment: center;
-                                        }
-
-                                        VerticalBox {
-                                            spacing: 2px;
-                                            Text {
-                                                text: device.path;
-                                                color: text-primary;
-                                                font-size: 13px;
-                                                font-weight: 600;
-                                            }
-
-                                            Text {
-                                                text: device.description;
-                                                color: text-secondary;
-                                                font-size: 11px;
-                                            }
-                                        }
-                                    }
-
-                                    TouchArea {
-                                        clicked => {
-                                            selected-device = device.path;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // Connection Buttons
-                        HorizontalBox {
-                            spacing: 10px;
-                            if !is-connected: Button {
-                                text: "Connect Printer";
-                                primary: true;
-                                enabled: selected-device != "" && !is-loading;
-                                clicked => {
-                                    connect-printer(selected-connection-type, selected-device);
-                                }
-                            }
-                            if is-connected: Button {
-                                text: "Disconnect";
-                                clicked => {
-                                    disconnect-printer();
-                                }
-                            }
-                            Button {
-                                text: "Save Settings";
-                                enabled: !is-loading;
-                                clicked => {
-                                    save-settings();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Right Panel - Info & Testing
-            Rectangle {
-                background: bg-color;
-                VerticalBox {
-                    padding: 30px;
-                    spacing: 25px;
-                
-                // Status Card
-                Rectangle {
-                        height: 180px;
-                        background: card-bg;
-                        border-radius: 12px;
-                        drop-shadow-blur: 10px;
-                        drop-shadow-color: #0000000d;
-                        VerticalBox {
-                            padding: 25px;
-                            spacing: 15px;
-                            Text {
-                                text: "Printer Status";
-                                color: text-primary;
-                                font-size: 18px;
-                                font-weight: 700;
-                            }
-
-                            HorizontalBox {
-                                spacing: 10px;
-                                Rectangle {
-                                    width: 12px;
-                                    height: 12px;
-                                    background: is-connected ? success-color : text-secondary;
-                                    border-radius: 6px;
-                                    y: 5px;
-                                }
-
-                                Text {
-                                    text: is-connected ? "Printer is ready" : "No printer connected";
-                                    color: text-secondary;
-                                    font-size: 14px;
-                                }
-                            }
-
-                            if is-connected: VerticalBox {
+                            // Filtered Device List
+                            VerticalBox {
                                 spacing: 8px;
-                                HorizontalBox {
-                                    Text {
-                                        text: "Device:";
-                                        color: text-secondary;
-                                        font-size: 13px;
-                                        width: 80px;
-                                    }
 
-                                    Text {
-                                        text: selected-device;
-                                        color: text-primary;
-                                        font-size: 13px;
-                                        font-weight: 600;
-                                    }
-                                }
-
-                                HorizontalBox {
-                                    Text {
-                                        text: "Type:";
-                                        color: text-secondary;
-                                        font-size: 13px;
-                                        width: 80px;
-                                    }
-
-                                    Text {
-                                        text: selected-connection-type;
-                                        color: text-primary;
-                                        font-size: 13px;
-                                        font-weight: 600;
+                                for device in available-devices: DeviceItem {
+                                    visible: device-filter == "All" || device.type == device-filter;
+                                    path: device.path;
+                                    description: device.description;
+                                    device-type: device.type;
+                                    selected: selected-device == device.path;
+                                    clicked => {
+                                        selected-device = device.path;
                                     }
                                 }
                             }
                         }
                     }
-                
-                // Test Print Card
-                Rectangle {
-                        height: 160px;
-                        background: card-bg;
-                        border-radius: 12px;
-                        drop-shadow-blur: 10px;
-                        drop-shadow-color: #0000000d;
-                        VerticalBox {
-                            padding: 25px;
-                            spacing: 15px;
-                            Text {
-                                text: "Test Printing";
-                                color: text-primary;
-                                font-size: 18px;
-                                font-weight: 700;
-                            }
 
-                            Text {
-                                text: "Send a test page to verify your printer is working correctly.";
-                                color: text-secondary;
-                                font-size: 13px;
-                                wrap: word-wrap;
-                            }
+                    // Connect Button
+                    HorizontalBox {
+                        spacing: 12px;
 
-                            Button {
-                                text: "🖨️ Print Test Page";
-                                enabled: is-connected && !is-loading;
-                                primary: true;
-                                clicked => {
-                                    test-print();
-                                }
+                        if !is-connected: PrimaryButton {
+                            label: "Connect Printer";
+                            disabled: selected-device == "";
+                            loading: is-loading;
+                            horizontal-stretch: 1;
+                            clicked => {
+                                connect-printer(selected-connection-type, selected-device);
+                            }
+                        }
+
+                        if is-connected: PrimaryButton {
+                            label: "Disconnect";
+                            bg: #dc2626;
+                            horizontal-stretch: 1;
+                            clicked => {
+                                disconnect-printer();
                             }
                         }
                     }
-                
-                // Info Card
-                Rectangle {
-                        background: @linear-gradient(135deg, #dbeafe 0%, #eff6ff 100%);
-                        border-radius: 12px;
-                        border-width: 1px;
-                        border-color: #bfdbfe;
-                        VerticalBox {
-                            padding: 20px;
-                            spacing: 10px;
-                            Text {
-                                text: "ℹ️ Supported Printers";
-                                color: primary-color;
-                                font-size: 15px;
-                                font-weight: 700;
-                            }
 
-                            Text {
-                                text: "• Epson TM-T88 Series\n• Star TSP143/654\n• Any ESC/POS compatible printer\n• USB, Network (Ethernet), and LPT ports";
-                                color: #1e40af;
-                                font-size: 12px;
-                                wrap: word-wrap;
-                            }
-                        }
+                    // Info Card
+                    InfoCard {
+                        title: "Supported Printers";
+                        content: "Epson TM-T88 Series • Star TSP143/654 • Any ESC/POS compatible printer\nSupports USB, Network (Ethernet), and LPT connections";
                     }
-                
-                // Status Message
-                if status-message != "": Rectangle {
-                        height: 60px;
-                        background: status-message == "✓ Printer connected successfully!" || status-message == "✓ Test page printed successfully!" || status-message == "✓ Settings saved successfully!" ? #dcfce7 : (status-message == "✗ Print failed: Failed to write to printer") ? #fee2e2 : #fef3c7;
-                        border-radius: 8px;
-                        border-width: 1px;
-                        border-color: status-message == "✓ Printer connected successfully!" || status-message == "✓ Test page printed successfully!" || status-message == "✓ Settings saved successfully!" ? #86efac : (status-message == "✗ Print failed: Failed to write to printer") ? #fca5a5 : #fde047;
-                        HorizontalBox {
-                            padding: 15px;
-                            spacing: 10px;
-                            Text {
-                                text: status-message == "✓ Printer connected successfully!" || status-message == "✓ Test page printed successfully!" || status-message == "✓ Settings saved successfully!" ? "✓" : (status-message == "✗ Print failed: Failed to write to printer") ? "✗" : "ⓘ";
-                                color: status-message == "✓ Printer connected successfully!" || status-message == "✓ Test page printed successfully!" || status-message == "✓ Settings saved successfully!" ? #16a34a : (status-message == "✗ Print failed: Failed to write to printer") ? #dc2626 : #ea580c;
-                                font-size: 18px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                            }
 
-                            Text {
-                                text: status-message;
-                                color: status-message == "✓ Printer connected successfully!" || status-message == "✓ Test page printed successfully!" || status-message == "✓ Settings saved successfully!" ? #166534 : (status-message == "✗ Print failed: Failed to write to printer") ? #991b1b : #9a3412;
-                                font-size: 13px;
-                                wrap: word-wrap;
-                                vertical-alignment: center;
-                            }
-                        }
+                    // Toast Message
+                    if status-message != "": Toast {
+                        message: status-message;
+                        type: toast-type;
                     }
+
+                    // Bottom spacer
                     Rectangle {
                         vertical-stretch: 1;
-                    }
-                
-                // Footer
-                Text {
-                        text: "Nexora POS v1.4.1 • Printer Manager";
-                        color: text-secondary;
-                        font-size: 12px;
-                        horizontal-alignment: center;
                     }
                 }
             }

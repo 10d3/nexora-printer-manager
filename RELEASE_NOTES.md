@@ -1,6 +1,11 @@
-## Nexora Printer Manager v1.4.1
+## Nexora Printer Manager v1.4.2
 
 ### What's New
+
+- FavIcon: Added a FavIcon
+
+### Previous Updates
+
 - **Professional Setup Installer**: Added a robust Windows Setup Executable (`nexora-printer-manager-setup.exe`) powered by Inno Setup.
   - Automatically installs to `Program Files`.
   - Creates Start Menu and Desktop shortcuts.
