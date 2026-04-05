@@ -7,7 +7,7 @@ fn main() {
     #[cfg(target_os = "windows")]
     {
         let mut res = winresource::WindowsResource::new();
-        res.set_icon("assets/favicon.png");
+        res.set_icon("assets/favicon.ico");
         if let Err(e) = res.compile() {
             eprintln!("Warning: Could not compile Windows icon: {}", e);
             eprintln!("The executable will build without an icon.");

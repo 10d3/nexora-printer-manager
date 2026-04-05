@@ -799,7 +799,7 @@ fn load_config() -> Result<Option<PrinterConfig>, String> {
 // ==================== Main Application ====================
 
 fn load_tray_icon() -> tray_icon::Icon {
-    let paths = ["assets/nexora.png", "assets/favicon.png"];
+    let paths = ["assets/favicon.ico", "assets/favicon.ico"];
 
     for path in paths {
         let icon_path = std::path::Path::new(path);
@@ -1159,4 +1159,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-

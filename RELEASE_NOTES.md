@@ -1,4 +1,4 @@
-## Nexora Printer Manager v1.4.2
+## Nexora Printer Manager v1.4.3
 
 ### What's New
 

@@ -459,6 +459,7 @@ component Toast inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "Nexora Printer Manager";
+icon: @image-url("../assets/favicon.png");
     preferred-width: 860px;
     preferred-height: 640px;
     min-width: 760px;
@@ -508,20 +509,18 @@ export component MainWindow inherits Window {
                         spacing: 10px;
 
                         Rectangle {
-                            width: 36px;
-                            height: 36px;
-                            background: #0f172a;
-                            border-radius: 10px;
-
-                            Text {
-                                text: "N";
-                                color: white;
-                                font-size: 18px;
-                                font-weight: 700;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
+    width: 36px;
+    height: 36px;
+    background: #0f172a;
+    border-radius: 10px;
+    Image {
+        source: @image-url("../assets/favicon.png");
+        width: 24px;
+        height: 24px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
 
                         VerticalBox {
                             spacing: 0px;
@@ -649,7 +648,7 @@ export component MainWindow inherits Window {
                     }
 
                     Text {
-                        text: "v1.4.2";
+                        text: "v1.4.3";
                         color: #cbd5e1;
                         font-size: 11px;
                         horizontal-alignment: center;
