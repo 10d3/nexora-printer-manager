@@ -1,5 +1,5 @@
 # Nexora Printer Manager API Guide
-## v1.4.0
+## v1.5.0
 
 This guide explains how to integrate your POS or web application with the Nexora Printer Manager HTTP API.
 
@@ -107,14 +107,120 @@ Useful for debugging your layouts. It returns the generated ESC/POS commands and
 
 ---
 
-### **5. Status & Health**
-- **Check Health**: `GET /health` (Returns `{"status": "healthy"}`)
-- **Check Printer Status**: `GET /status`
-  - Returns connection status, active template ID, and count of cached templates.
+### **5. Logo Caching (Fast Printing)**
+Cache logos on the server to avoid re-encoding large images with every print request. Cached logos are stored both in-memory and persisted to disk at `./cache/logos/`.
+
+#### **Cache a Logo Explicitly**
+- **Endpoint**: `POST /cache-logo`
+- **Payload**:
+```json
+{
+  "id": "company-logo",  // Optional: user-friendly ID. If omitted, auto-generated from content hash
+  "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+}
+```
+- **Response**:
+```json
+{
+  "id": "company-logo",
+  "content_hash": "a1b2c3d4e5f6...",
+  "cached": true,
+  "file_path": "./cache/logos/company-logo.b64"
+}
+```
+- **Note**: If the same image is cached twice, the second request returns `"cached": false` (reused existing).
+
+#### **List All Cached Logos**
+- **Endpoint**: `GET /logos`
+- **Response**:
+```json
+{
+  "logos": [
+    {
+      "id": "company-logo",
+      "content_hash": "a1b2c3d4...",
+      "metadata": {
+        "file_size_bytes": 2048,
+        "original_width": 200,
+        "original_height": 100,
+        "usage_count": 5,
+        "cached_dimensions": null
+      },
+      "created_at": "2026-04-06T10:30:00Z",
+      "last_used": "2026-04-06T14:15:00Z"
+    }
+  ]
+}
+```
+
+#### **Delete a Cached Logo**
+- **Endpoint**: `DELETE /logos/{id}`
+- **Example**: `DELETE /logos/company-logo`
+- **Response**:
+```json
+{
+  "success": true,
+  "message": "Logo deleted: company-logo"
+}
+```
+
+#### **Auto-Caching in Templates**
+When you POST a template with inline base64 logos to `/template`, they are automatically cached:
+- **Endpoint**: `POST /template`
+- **Behavior**:
+  1. System scans the template for all logo elements
+  2. Inline base64 images are cached with auto-generated hash-based IDs
+  3. Template is updated to reference the cached logo IDs
+  4. Response includes count of auto-cached logos
+
+#### **Using Cached Logos in Templates**
+There are three ways to reference a cached logo:
+
+**Method 1: Explicit `logo_id` field**
+```json
+{
+  "type": "logo",
+  "logo_id": "company-logo",
+  "align": "center",
+  "max_width": 288
+}
+```
+
+**Method 2: Simple source string (smart fallback)**
+```json
+{
+  "type": "logo",
+  "source": "company-logo",  // If not base64-like, system checks cache first
+  "align": "center"
+}
+```
+
+**Method 3: Inline base64 (backward compatible)**
+```json
+{
+  "type": "logo",
+  "source": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "align": "center"
+}
+```
 
 ---
 
-### **6. Converting TypeScript Templates to JSON**
+### **6. Status & Health**
+- **Check Health**: `GET /health` (Returns `{"status": "healthy"}`)
+- **Check Printer Status**: `GET /status`
+  - Returns connection status, active template ID, cached template count, and logo cache statistics.
+  - Response includes `logo_cache_info` with `count`, `total_size_bytes`, and `disk_usage_bytes`.
+
+---
+
+### **7. Cache Management**
+- **Clear Template Cache**: `DELETE /cache`
+- **Clear Template & Logo Cache**: `DELETE /cache?include_logos=true`
+
+---
+
+### **8. Converting TypeScript Templates to JSON**
 If you are using the templates defined in `pro-template.ts`, you need to convert them to valid JSON before sending them to the `/template` or `/print-template` endpoints.
 
 #### **Key Differences**
@@ -169,7 +275,7 @@ If you are using the templates defined in `pro-template.ts`, you need to convert
 
 ---
 
-### **7. Template Element Reference**
+### **9. Template Element Reference**
 Below are the supported elements and their main properties:
 
 | Element | Properties | Notes |

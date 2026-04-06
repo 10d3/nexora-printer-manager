@@ -2,7 +2,7 @@
 // HTTP server for integration with Nexora POS web app using Axum
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{delete, get, post},
     Json, Router,
@@ -70,6 +70,7 @@ pub struct StatusResponse {
     pub connected: bool,
     pub active_template: Option<String>,
     pub cached_templates: usize,
+    pub logo_cache_info: LogoCacheStatsResponse,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,6 +94,34 @@ pub struct PreviewResponse {
     pub text_preview: String,
 }
 
+// ==================== Logo Cache Types ====================
+
+#[derive(Debug, Deserialize)]
+pub struct CacheLogoRequest {
+    pub id: Option<String>,          // User-provided ID, or auto-generated from hash
+    pub base64: String,              // Base64 image data
+}
+
+#[derive(Debug, Serialize)]
+pub struct CacheLogoResponse {
+    pub id: String,                  // Assigned ID
+    pub content_hash: String,        // SHA256 hash
+    pub cached: bool,                // true = newly cached, false = reused existing
+    pub file_path: String,           // Disk path where logo is stored
+}
+
+#[derive(Debug, Serialize)]
+pub struct LogoCacheListResponse {
+    pub logos: Vec<crate::LogoCacheEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LogoCacheStatsResponse {
+    pub count: usize,
+    pub total_size_bytes: u64,
+    pub disk_usage_bytes: u64,
+}
+
 // ==================== App State ====================
 
 pub struct AppState {
@@ -109,10 +138,16 @@ async fn health() -> Json<serde_json::Value> {
 /// Get printer and server status
 async fn status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
     let manager = state.printer_manager.lock().unwrap();
+    let (count, total_size, disk_usage) = crate::logo_cache::get_cache_stats(&manager);
     Json(StatusResponse {
         connected: manager.is_connected(),
         active_template: manager.active_template_id.clone(),
         cached_templates: manager.template_cache.len(),
+        logo_cache_info: LogoCacheStatsResponse {
+            count,
+            total_size_bytes: total_size,
+            disk_usage_bytes: disk_usage,
+        },
     })
 }
 
@@ -185,12 +220,33 @@ async fn set_template(
 ) -> Result<Json<ApiResponse>, StatusCode> {
     let mut manager = state.printer_manager.lock().unwrap();
     let template_id = request.template.id.clone();
+    let mut template = request.template;
 
-    match manager.set_template(request.template) {
-        Ok(_) => Ok(Json(ApiResponse {
-            success: true,
-            message: format!("Template '{}' cached and set as active", template_id),
-        })),
+    // Auto-cache any inline logos in the template
+    let auto_cached = match crate::logo_cache::auto_cache_template_logos(&mut manager, &mut template) {
+        Ok(count) => count,
+        Err(e) => {
+            log::warn!("Failed to auto-cache logos: {}", e);
+            0
+        }
+    };
+
+    match manager.set_template(template) {
+        Ok(_) => {
+            let message = if auto_cached > 0 {
+                format!("Template '{}' cached and set as active (auto-cached {} logo{})", 
+                    template_id, 
+                    auto_cached, 
+                    if auto_cached == 1 { "" } else { "s" }
+                )
+            } else {
+                format!("Template '{}' cached and set as active", template_id)
+            };
+            Ok(Json(ApiResponse {
+                success: true,
+                message,
+            }))
+        }
         Err(e) => {
             log::error!("Failed to set template: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -298,16 +354,30 @@ async fn get_template(
     }
 }
 
-/// Clear template cache
-async fn clear_cache(State(state): State<Arc<AppState>>) -> Result<Json<ApiResponse>, StatusCode> {
+/// Clear template cache (optionally include logos)
+async fn clear_cache(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<ApiResponse>, StatusCode> {
     let mut manager = state.printer_manager.lock().unwrap();
+    let include_logos = params.get("include_logos").map_or(false, |v| v == "true");
 
     manager.template_cache.clear();
     manager.active_template_id = None;
 
+    let mut message = "Template cache cleared".to_string();
+
+    if include_logos {
+        if let Err(e) = crate::logo_cache::clear_logo_cache(&mut manager) {
+            log::warn!("Failed to clear logo cache: {}", e);
+        } else {
+            message = "Template and logo cache cleared".to_string();
+        }
+    }
+
     Ok(Json(ApiResponse {
         success: true,
-        message: "Template cache cleared".to_string(),
+        message,
     }))
 }
 
@@ -434,6 +504,58 @@ async fn preview_template(
     }
 }
 
+// ==================== Logo Cache Handlers ====================
+
+/// Cache a logo for fast printing
+async fn cache_logo(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<CacheLogoRequest>,
+) -> Result<Json<CacheLogoResponse>, StatusCode> {
+    let mut manager = state.printer_manager.lock().unwrap();
+
+    match crate::logo_cache::cache_logo(&mut manager, request.id, &request.base64) {
+        Ok((id, content_hash, cached)) => {
+            let file_path = format!("{}/{}.b64", manager.logo_cache_path, &id);
+            Ok(Json(CacheLogoResponse {
+                id,
+                content_hash,
+                cached,
+                file_path,
+            }))
+        }
+        Err(e) => {
+            log::error!("Logo caching failed: {}", e);
+            Err(StatusCode::BAD_REQUEST)
+        }
+    }
+}
+
+/// Get all cached logos
+async fn get_logos(State(state): State<Arc<AppState>>) -> Json<LogoCacheListResponse> {
+    let manager = state.printer_manager.lock().unwrap();
+    let logos = crate::logo_cache::get_all_logos(&manager);
+    Json(LogoCacheListResponse { logos })
+}
+
+/// Delete a specific logo from cache
+async fn delete_logo(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse>, StatusCode> {
+    let mut manager = state.printer_manager.lock().unwrap();
+
+    match crate::logo_cache::delete_logo(&mut manager, &id) {
+        Ok(()) => Ok(Json(ApiResponse {
+            success: true,
+            message: format!("Logo deleted: {}", id),
+        })),
+        Err(e) => {
+            log::warn!("Logo deletion failed: {}", e);
+            Err(StatusCode::NOT_FOUND)
+        }
+    }
+}
+
 /// Print a base64-encoded image (PNG/JPEG), scaled to fit paper width.
 // async fn print_image(
 //     State(state): State<Arc<AppState>>,
@@ -548,6 +670,10 @@ pub async fn start_server(
         // .route("/preview-image", post(preview_image))
         // Cache management
         .route("/cache", delete(clear_cache))
+        // Logo caching
+        .route("/cache-logo", post(cache_logo))
+        .route("/logos", get(get_logos))
+        .route("/logos/{id}", delete(delete_logo))
         .layer(cors)
         .with_state(state);
 

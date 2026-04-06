@@ -16,6 +16,7 @@ mod autostart;
 mod http_server;
 mod image_print;
 mod template_render;
+mod logo_cache;
 
 pub use template_render::{
     Element, ReceiptData, ReceiptItem, ReceiptTemplate, Section, TemplateLayout, TemplateRenderer,
@@ -54,6 +55,36 @@ pub struct Receipt {
     pub payment_method: String,
 }
 
+// ==================== Logo Cache Models ====================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedDimensions {
+    pub align: String,                  // left, center, right
+    pub max_width_dots: Option<u32>,
+    pub max_height_dots: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogoMetadata {
+    pub file_size_bytes: usize,
+    pub original_width: u32,
+    pub original_height: u32,
+    pub mime_type: Option<String>,
+    pub usage_count: u32,
+    pub cached_dimensions: Option<CachedDimensions>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogoCacheEntry {
+    pub id: String,                      // Named ID (user-provided or auto-generated)
+    pub content_hash: String,            // SHA256 of base64 (for dedup)
+    pub base64_data: String,             // Original base64 image
+    pub file_path: Option<String>,       // Path if persisted to disk
+    pub metadata: LogoMetadata,          // Stats and rendering prefs
+    pub created_at: String,              // ISO 8601 timestamp
+    pub last_used: Option<String>,       // ISO 8601 timestamp
+}
+
 // ==================== Printer Manager ====================
 
 #[derive(Debug, Clone)]
@@ -71,6 +102,8 @@ pub struct PrinterManager {
     pub config: Option<PrinterConfig>,
     pub template_cache: std::collections::HashMap<String, ReceiptTemplate>,
     pub active_template_id: Option<String>,
+    pub logo_cache: std::collections::HashMap<String, LogoCacheEntry>,
+    pub logo_cache_path: String,
 }
 
 impl PrinterManager {
@@ -80,6 +113,8 @@ impl PrinterManager {
             config: None,
             template_cache: std::collections::HashMap::new(),
             active_template_id: None,
+            logo_cache: std::collections::HashMap::new(),
+            logo_cache_path: "./cache/logos".to_string(),
         }
     }
 
@@ -236,14 +271,18 @@ impl PrinterManager {
             .active_template_id
             .as_ref()
             .ok_or("No active template set")?;
-        let template = self
+        let mut template = self
             .template_cache
             .get(template_id)
-            .ok_or("Template not found in cache")?;
+            .ok_or("Template not found in cache")?
+            .clone();
+
+        // Resolve any logo references using the logo cache
+        logo_cache::resolve_template_logos(self, &mut template)?;
 
         let paper_width = template.paper_width.unwrap_or(48);
         let renderer = TemplateRenderer::new(paper_width);
-        let commands = renderer.render_to_commands(template, data)?;
+        let commands = renderer.render_to_commands(&template, data)?;
 
         self.execute_commands(commands)
     }
@@ -846,6 +885,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create printer manager
     let printer_manager = Arc::new(Mutex::new(PrinterManager::new()));
+    
+    // Load logos from disk cache
+    {
+        let mut manager = printer_manager.lock().unwrap();
+        if let Err(e) = logo_cache::load_logos_from_disk(&mut manager) {
+            log::warn!("Failed to load logo cache: {}", e);
+        }
+    }
 
     // Keep the tray icon alive
     let mut _tray_icon_handle = None;
@@ -854,7 +901,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let args: Vec<String> = env::args().collect();
         let minimized = args.contains(&"--minimized".to_string());
 
-        log::info!("Starting Nexora Printer Manager v1.4.0");
+        log::info!("Starting Nexora Printer Manager v1.5.0");
 
         // Setup Auto-launch
         let autostart = autostart::Autostart::new();
@@ -979,12 +1026,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
 
-        // Load saved configuration
+        // Load saved configuration and auto-connect on startup
         if let Ok(Some(config)) = load_config() {
             ui.set_selected_connection_type(config.connection_type.clone().into());
             ui.set_selected_device(config.device_path.clone().into());
-            ui.set_status_message("Configuration loaded successfully".into());
-            log::info!("Loaded saved configuration");
+            ui.set_status_message("Configuration loaded, attempting auto-connect...".into());
+            log::info!("Loaded saved configuration: {} at {}", config.connection_type, config.device_path);
+            
+            // Attempt auto-connect with saved configuration
+            {
+                let mut manager = printer_manager.lock().unwrap();
+                match manager.connect(config.clone()) {
+                    Ok(_) => {
+                        ui.set_is_connected(true);
+                        ui.set_status_message("✓ Auto-connected to saved printer!".into());
+                        log::info!("Auto-connected to printer successfully");
+                    }
+                    Err(e) => {
+                        ui.set_is_connected(false);
+                        ui.set_status_message(format!("Auto-connect failed: {}", e).into());
+                        log::warn!("Auto-connect failed: {}", e);
+                    }
+                }
+            }
+        } else {
+            log::debug!("No saved configuration found at startup");
         }
 
         if !minimized {

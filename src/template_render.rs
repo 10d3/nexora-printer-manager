@@ -131,6 +131,8 @@ pub struct LogoElement {
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
+    pub logo_id: Option<String>,    // Reference to cached logo
+    #[serde(default)]
     pub align: Option<String>,
     #[serde(default)]
     pub max_width: Option<u32>,

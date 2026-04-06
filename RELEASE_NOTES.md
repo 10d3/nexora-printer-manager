@@ -1,7 +1,9 @@
-## Nexora Printer Manager v1.4.3
+## Nexora Printer Manager v1.5.0
 
 ### What's New
 
+- **Auto-Load + Auto-Connect on Startup**: The application now automatically loads saved printer configuration on launch and attempts to connect to the previously configured printer, giving users an instant ready state.
+- **Logo Auto-Caching**: Added a new logo cache system for fast printing, including explicit `/cache-logo` API caching and automatic template-driven caching for future use.
 - FavIcon: Added a FavIcon
 
 ### Previous Updates
