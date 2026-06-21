@@ -114,7 +114,11 @@ impl PrinterManager {
             template_cache: std::collections::HashMap::new(),
             active_template_id: None,
             logo_cache: std::collections::HashMap::new(),
-            logo_cache_path: "./cache/logos".to_string(),
+            logo_cache_path: directories::ProjectDirs::from("com", "nexora", "printer-manager")
+                .map(|d| d.data_local_dir().join("cache").join("logos"))
+                .unwrap_or_else(|| std::path::PathBuf::from("cache").join("logos"))
+                .to_string_lossy()
+                .into_owned(),
         }
     }
 
@@ -901,7 +905,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let args: Vec<String> = env::args().collect();
         let minimized = args.contains(&"--minimized".to_string());
 
-        log::info!("Starting Nexora Printer Manager v1.5.0");
+        log::info!("Starting Nexora Printer Manager v1.5.1");
 
         // Setup Auto-launch
         let autostart = autostart::Autostart::new();

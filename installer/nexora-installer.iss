@@ -1,6 +1,6 @@
 [Setup]
 AppName=Nexora Printer Manager
-AppVersion=1.5.0
+AppVersion=1.5.1
 AppPublisher=Nexora Team
 AppPublisherURL=https://github.com/nexora/printer-manager
 DefaultDirName={autopf}\Nexora\Printer Manager

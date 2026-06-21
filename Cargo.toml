@@ -1,6 +1,6 @@
 [package]
 name = "nexora-printer-manager"
-version = "1.5.0"
+version = "1.5.1"
 description = "Nexora POS Printer Manager - Professional ESC/POS printer setup and management"
 authors = ["Nexora Team"]
 license = "GPL-3.0-only"
