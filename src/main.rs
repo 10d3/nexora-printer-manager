@@ -1159,7 +1159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let args: Vec<String> = env::args().collect();
         let minimized = args.contains(&"--minimized".to_string());
 
-        log::info!("Starting Nexora Printer Manager v1.6.0");
+        log::info!("Starting Nexora Printer Manager v1.6.1");
 
         // Setup Auto-launch
         let autostart = autostart::Autostart::new();
@@ -1318,7 +1318,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match bc_manager.connect(bc_config) {
                 Ok(_) => {
                     ui.set_barcode_is_connected(true);
-                    ui.set_barcode_status_message("\u2713 Auto-connected to barcode printer!".into());
+                    ui.set_barcode_status_message("\u{2713} Auto-connected to barcode printer!".into());
                     log::info!("Auto-connected to barcode printer");
                 }
                 Err(e) => {
@@ -1501,11 +1501,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut manager = bc_manager.lock().unwrap();
                 if let Err(e) = manager.connect(config.clone()) {
                     ui.set_barcode_is_connected(false);
-                    ui.set_barcode_status_message(format!("\u2717 Connection failed: {}", e).into());
+                    ui.set_barcode_status_message(format!("\u{2717} Connection failed: {}", e).into());
                     log::error!("Barcode connection failed: {}", e);
                 } else {
                     ui.set_barcode_is_connected(true);
-                    ui.set_barcode_status_message("\u2713 Barcode printer connected!".into());
+                    ui.set_barcode_status_message("\u{2713} Barcode printer connected!".into());
                     if let Err(e) = save_barcode_config(&config) {
                         log::warn!("Failed to save barcode config: {}", e);
                     }
@@ -1541,10 +1541,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut manager = bc_manager.lock().unwrap();
                 match manager.print_test_label() {
                     Ok(_) => {
-                        ui.set_barcode_status_message("\u2713 Test label printed successfully!".into());
+                        ui.set_barcode_status_message("\u{2713} Test label printed successfully!".into());
                     }
                     Err(e) => {
-                        ui.set_barcode_status_message(format!("\u2717 Print failed: {}", e).into());
+                        ui.set_barcode_status_message(format!("\u{2717} Print failed: {}", e).into());
                         log::error!("Barcode test print failed: {}", e);
                     }
                 }
