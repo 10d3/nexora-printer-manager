@@ -586,7 +586,7 @@ icon: @image-url("../assets/favicon.png");
                     spacing: 4px;
                     Rectangle { height: 1px; background: #e2e8f0; }
                     Text {
-                        text: "v1.6.1";
+                        text: "v1.6.2";
                         color: #cbd5e1;
                         font-size: 11px;
                         horizontal-alignment: center;
@@ -857,11 +857,10 @@ icon: @image-url("../assets/favicon.png");
                                 }
                             }
 
-                            // Device + protocol row
+                            // Device input + scan
                             HorizontalBox {
                                 spacing: 10px;
 
-                                // Device input
                                 Rectangle {
                                     height: 44px;
                                     horizontal-stretch: 1;
@@ -880,19 +879,52 @@ icon: @image-url("../assets/favicon.png");
                                     }
                                 }
 
+                                Rectangle {
+                                    width: 72px;
+                                    height: 44px;
+                                    background: (barcode-is-loading || barcode-is-connected) ? #f1f5f9 : #0f172a;
+                                    border-radius: 10px;
+                                    Text {
+                                        text: barcode-is-loading ? "..." : "Scan";
+                                        color: (barcode-is-loading || barcode-is-connected) ? #94a3b8 : white;
+                                        font-size: 13px; font-weight: 600;
+                                        horizontal-alignment: center; vertical-alignment: center;
+                                    }
+                                    TouchArea {
+                                        mouse-cursor: (barcode-is-loading || barcode-is-connected) ? default : pointer;
+                                        clicked => { if !barcode-is-loading && !barcode-is-connected { scan-devices(); } }
+                                    }
+                                }
+                            }
+
+                            // Device list
+                            if available-devices.length > 0: VerticalBox {
+                                spacing: 6px;
+                                for device in available-devices: DeviceItem {
+                                    visible: device-filter == "All" || device.type == barcode-connection-type;
+                                    path: device.path;
+                                    description: device.description;
+                                    device-type: device.type;
+                                    selected: barcode-device == device.path;
+                                    clicked => { barcode-device = device.path; }
+                                }
+                            }
+
+                            // Protocol + Label settings row
+                            HorizontalBox {
+                                spacing: 12px;
+
                                 // Protocol selector
                                 VerticalBox {
                                     spacing: 4px;
-                                    width: 130px;
-                                    alignment: center;
-
+                                    horizontal-stretch: 1.5;
                                     Text { text: "Protocol"; color: #94a3b8; font-size: 11px; font-weight: 600; }
-
+                                    
                                     HorizontalBox {
                                         spacing: 6px;
 
                                         Rectangle {
-                                            height: 32px;
+                                            height: 40px;
                                             horizontal-stretch: 1;
                                             background: barcode-protocol == "TSPL" ? #0f172a : #ffffff;
                                             border-radius: 8px;
@@ -911,7 +943,7 @@ icon: @image-url("../assets/favicon.png");
                                         }
 
                                         Rectangle {
-                                            height: 32px;
+                                            height: 40px;
                                             horizontal-stretch: 1;
                                             background: barcode-protocol == "ZPL" ? #0f172a : #ffffff;
                                             border-radius: 8px;
@@ -930,7 +962,7 @@ icon: @image-url("../assets/favicon.png");
                                         }
 
                                         Rectangle {
-                                            height: 32px;
+                                            height: 40px;
                                             horizontal-stretch: 1;
                                             background: barcode-protocol == "EPL" ? #0f172a : #ffffff;
                                             border-radius: 8px;
@@ -949,11 +981,6 @@ icon: @image-url("../assets/favicon.png");
                                         }
                                     }
                                 }
-                            }
-
-                            // Label dimensions + DPI row
-                            HorizontalBox {
-                                spacing: 12px;
 
                                 VerticalBox {
                                     spacing: 4px;
