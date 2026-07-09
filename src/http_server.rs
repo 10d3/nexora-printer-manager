@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::{PrinterManager, ReceiptData, ReceiptTemplate, TemplateRenderer};
+use crate::{
+    PrinterManager, ReceiptData, ReceiptTemplate, TemplateRenderer,
+    BarcodePrinterManager, BarcodePrinterConfig, BarcodeType, BarcodeLabelRequest,
+};
 
 // ==================== Request/Response Types ====================
 
@@ -122,10 +125,40 @@ pub struct LogoCacheStatsResponse {
     pub disk_usage_bytes: u64,
 }
 
+// ==================== Barcode Printer Types ====================
+
+#[derive(Debug, Deserialize)]
+pub struct BarcodePrinterConnectRequest {
+    pub connection_type: String,
+    pub device_path: String,
+    pub protocol: String,
+    pub label_width_mm: u32,
+    pub label_height_mm: u32,
+    pub dpi: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PrintBarcodeRequest {
+    pub barcode_data: String,
+    pub barcode_type: Option<String>,   // defaults to CODE128
+    pub label_text: Option<String>,
+    pub copies: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BarcodeStatusResponse {
+    pub connected: bool,
+    pub protocol: Option<String>,
+    pub label_width_mm: Option<u32>,
+    pub label_height_mm: Option<u32>,
+    pub dpi: Option<u32>,
+}
+
 // ==================== App State ====================
 
 pub struct AppState {
     pub printer_manager: Arc<Mutex<PrinterManager>>,
+    pub barcode_manager: Arc<Mutex<BarcodePrinterManager>>,
 }
 
 // ==================== Route Handlers ====================
@@ -634,14 +667,139 @@ async fn delete_logo(
 //     }
 // }
 
+// ==================== Barcode Printer Handlers ====================
+
+async fn barcode_status(
+    State(state): State<Arc<AppState>>,
+) -> Json<BarcodeStatusResponse> {
+    let manager = state.barcode_manager.lock().unwrap();
+    let (protocol, width, height, dpi) = if let Some(config) = &manager.config {
+        (
+            Some(config.protocol.clone()),
+            Some(config.label_width_mm),
+            Some(config.label_height_mm),
+            Some(config.dpi),
+        )
+    } else {
+        (None, None, None, None)
+    };
+    Json(BarcodeStatusResponse {
+        connected: manager.is_connected(),
+        protocol,
+        label_width_mm: width,
+        label_height_mm: height,
+        dpi,
+    })
+}
+
+async fn barcode_connect(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<BarcodePrinterConnectRequest>,
+) -> Json<ApiResponse> {
+    let config = BarcodePrinterConfig {
+        connection_type: request.connection_type,
+        device_path: request.device_path,
+        protocol: request.protocol,
+        label_width_mm: request.label_width_mm,
+        label_height_mm: request.label_height_mm,
+        dpi: request.dpi,
+    };
+    let mut manager = state.barcode_manager.lock().unwrap();
+    match manager.connect(config) {
+        Ok(_) => Json(ApiResponse {
+            success: true,
+            message: "Barcode printer connected".to_string(),
+        }),
+        Err(e) => Json(ApiResponse {
+            success: false,
+            message: format!("Barcode printer connection failed: {}", e),
+        }),
+    }
+}
+
+async fn barcode_disconnect(
+    State(state): State<Arc<AppState>>,
+) -> Json<ApiResponse> {
+    let mut manager = state.barcode_manager.lock().unwrap();
+    manager.disconnect();
+    Json(ApiResponse {
+        success: true,
+        message: "Barcode printer disconnected".to_string(),
+    })
+}
+
+async fn print_barcode(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<PrintBarcodeRequest>,
+) -> Json<ApiResponse> {
+    let mut manager = state.barcode_manager.lock().unwrap();
+
+    if !manager.is_connected() {
+        return Json(ApiResponse {
+            success: false,
+            message: "Barcode printer not connected".to_string(),
+        });
+    }
+
+    let barcode_type = match request.barcode_type.as_deref().unwrap_or("CODE128").to_uppercase().as_str() {
+        "EAN13" | "EAN-13" => BarcodeType::Ean13,
+        "EAN8"  | "EAN-8"  => BarcodeType::Ean8,
+        "CODE39" | "39"    => BarcodeType::Code39,
+        "UPCA"  | "UPC-A"  => BarcodeType::Upca,
+        "QR"    | "QRCODE" => BarcodeType::Qr,
+        _                   => BarcodeType::Code128,
+    };
+
+    let req = BarcodeLabelRequest {
+        barcode_data: request.barcode_data.clone(),
+        barcode_type,
+        label_text: request.label_text,
+        copies: request.copies,
+    };
+
+    match manager.print_label(&req) {
+        Ok(_) => Json(ApiResponse {
+            success: true,
+            message: format!("Barcode label printed: {}", request.barcode_data),
+        }),
+        Err(e) => Json(ApiResponse {
+            success: false,
+            message: format!("Barcode print failed: {}", e),
+        }),
+    }
+}
+
+async fn barcode_test_print(
+    State(state): State<Arc<AppState>>,
+) -> Json<ApiResponse> {
+    let mut manager = state.barcode_manager.lock().unwrap();
+    if !manager.is_connected() {
+        return Json(ApiResponse {
+            success: false,
+            message: "Barcode printer not connected".to_string(),
+        });
+    }
+    match manager.print_test_label() {
+        Ok(_) => Json(ApiResponse {
+            success: true,
+            message: "Barcode test label printed".to_string(),
+        }),
+        Err(e) => Json(ApiResponse {
+            success: false,
+            message: format!("Barcode test print failed: {}", e),
+        }),
+    }
+}
+
 // ==================== Server Setup ====================
 
 /// Start HTTP server in background
 pub async fn start_server(
     printer_manager: Arc<Mutex<PrinterManager>>,
+    barcode_manager: Arc<Mutex<BarcodePrinterManager>>,
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = Arc::new(AppState { printer_manager });
+    let state = Arc::new(AppState { printer_manager, barcode_manager });
 
     // Configure CORS for web app integration
     let cors = CorsLayer::new()
@@ -674,6 +832,12 @@ pub async fn start_server(
         .route("/cache-logo", post(cache_logo))
         .route("/logos", get(get_logos))
         .route("/logos/{id}", delete(delete_logo))
+        // Barcode printer
+        .route("/barcode/status",      get(barcode_status))
+        .route("/barcode/connect",     post(barcode_connect))
+        .route("/barcode/disconnect",  post(barcode_disconnect))
+        .route("/print-barcode",       post(print_barcode))
+        .route("/barcode/test-print",  post(barcode_test_print))
         .layer(cors)
         .with_state(state);
 

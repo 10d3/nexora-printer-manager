@@ -320,91 +320,7 @@ component StatusBadge inherits Rectangle {
     }
 }
 
-// Info Card
-component InfoCard inherits Rectangle {
-    in property <string> title;
-    in property <string> content;
 
-    background: #fafafa;
-    border-radius: 12px;
-    border-width: 1px;
-    border-color: #f1f5f9;
-
-    VerticalBox {
-        padding: 18px;
-        spacing: 10px;
-
-        Text {
-            text: title;
-            color: #0f172a;
-            font-size: 13px;
-            font-weight: 600;
-        }
-
-        Text {
-            text: content;
-            color: #64748b;
-            font-size: 12px;
-            wrap: word-wrap;
-        }
-    }
-}
-
-// Filter Chip
-component FilterChip inherits Rectangle {
-    in property <string> label;
-    in property <bool> active: false;
-    in property <int> count: 0;
-
-    callback clicked();
-
-    width: self.preferred-width;
-    height: 32px;
-    background: active ? #0f172a : #ffffff;
-    border-radius: 16px;
-    border-width: active ? 0px : 1px;
-    border-color: #e2e8f0;
-    padding-left: 14px;
-    padding-right: 14px;
-
-    animate background { duration: 120ms; }
-    animate border-color { duration: 120ms; }
-
-    HorizontalBox {
-        spacing: 6px;
-        alignment: center;
-
-        Text {
-            text: label;
-            color: active ? #ffffff : #64748b;
-            font-size: 12px;
-            font-weight: 500;
-        }
-
-        if count > 0: Rectangle {
-            width: 18px;
-            height: 18px;
-            background: active ? #374151 : #f1f5f9;
-            border-radius: 9px;
-
-            Text {
-                text: count;
-                color: active ? #d1d5db : #64748b;
-                font-size: 10px;
-                font-weight: 600;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-    }
-
-    TouchArea {
-        mouse-cursor: pointer;
-        clicked => {
-            clicked();
-        }
-    }
-}
 
 // Toast Notification
 component Toast inherits Rectangle {
@@ -460,31 +376,59 @@ component Toast inherits Rectangle {
 export component MainWindow inherits Window {
     title: "Nexora Printer Manager";
 icon: @image-url("../assets/favicon.png");
-    preferred-width: 860px;
-    preferred-height: 640px;
-    min-width: 760px;
-    min-height: 560px;
+    preferred-width: 960px;
+    preferred-height: 720px;
+    min-width: 820px;
+    min-height: 600px;
     background: #ffffff;
 
-    // Callbacks for Rust backend
+    // ── Receipt printer callbacks ──
     callback scan-devices();
     callback connect-printer(string, string);
     callback disconnect-printer();
     callback test-print();
     callback save-settings();
 
-    // Properties
+    // ── Barcode printer callbacks ──
+    callback barcode-connect-printer(string, string, string, int, int, int);
+    callback barcode-disconnect-printer();
+    callback barcode-test-print();
+
+    // ── Receipt printer properties ──
     in-out property <[Device]> available-devices: [];
     in-out property <bool> is-connected: false;
     in-out property <bool> is-loading: false;
     in-out property <string> status-message: "";
     in-out property <string> selected-connection-type: "USB";
     in-out property <string> selected-device: "";
-    in-out property <string> device-filter: "All"; // All, USB, Network, LPT
-    
-    // Derived properties for toast type
-    property <string> toast-type: 
-        status-message == "" ? "info" : (status-message == "✓ Printer connected successfully!" || status-message == "✓ Test page printed successfully!" || status-message == "✓ Settings saved successfully!") ? "success" : (status-message == "✗ Print failed: Failed to write to printer") ? "error" : "warning";
+    in-out property <string> device-filter: "All";
+
+    // ── Barcode printer properties ──
+    in-out property <bool> barcode-is-connected: false;
+    in-out property <bool> barcode-is-loading: false;
+    in-out property <string> barcode-status-message: "";
+    in-out property <string> barcode-connection-type: "USB";
+    in-out property <string> barcode-device: "";
+    in-out property <string> barcode-protocol: "TSPL";
+    in-out property <int> barcode-width-mm: 50;
+    in-out property <int> barcode-height-mm: 30;
+    in-out property <int> barcode-dpi: 203;
+
+    // ── Derived toast types ──
+    property <string> toast-type:
+        status-message == "" ? "info" :
+        (status-message == "✓ Printer connected successfully!" ||
+         status-message == "✓ Test page printed successfully!" ||
+         status-message == "✓ Settings saved successfully!") ? "success" :
+        (status-message == "✗ Print failed: Failed to write to printer") ? "error" : "warning";
+
+    property <string> barcode-toast-type:
+        barcode-status-message == "" ? "info" :
+        (barcode-status-message == "✓ Barcode printer connected!" ||
+         barcode-status-message == "✓ Auto-connected to barcode printer!" ||
+         barcode-status-message == "✓ Test label printed successfully!") ? "success" :
+        (barcode-status-message == "✗ Connection failed" ||
+         barcode-status-message == "✗ Print failed") ? "error" : "warning";
 
     HorizontalBox {
         padding: 0px;
@@ -548,15 +492,13 @@ icon: @image-url("../assets/favicon.png");
                     background: #e2e8f0;
                 }
 
-                // Status Section
+                // Receipt Printer Status
                 VerticalBox {
-                    padding-top: 24px;
-                    padding-bottom: 24px;
-                    spacing: 16px;
+                    padding-top: 20px;
+                    padding-bottom: 12px;
+                    spacing: 8px;
 
-                    SectionTitle {
-                        label: "STATUS";
-                    }
+                    SectionTitle { label: "RECEIPT PRINTER"; }
 
                     StatusBadge {
                         active: is-connected;
@@ -564,91 +506,87 @@ icon: @image-url("../assets/favicon.png");
                     }
 
                     if is-connected: VerticalBox {
-                        spacing: 8px;
+                        spacing: 4px;
 
                         HorizontalBox {
-                            Text {
-                                text: "Device";
-                                color: #94a3b8;
-                                font-size: 12px;
-                                width: 56px;
-                            }
-
-                            Text {
-                                text: selected-device;
-                                color: #0f172a;
-                                font-size: 12px;
-                                font-weight: 500;
-                                overflow: elide;
-                            }
+                            Text { text: "Device"; color: #94a3b8; font-size: 11px; width: 48px; }
+                            Text { text: selected-device; color: #0f172a; font-size: 11px; font-weight: 500; overflow: elide; }
                         }
-
                         HorizontalBox {
-                            Text {
-                                text: "Type";
-                                color: #94a3b8;
-                                font-size: 12px;
-                                width: 56px;
-                            }
-
-                            Text {
-                                text: selected-connection-type;
-                                color: #0f172a;
-                                font-size: 12px;
-                                font-weight: 500;
-                            }
+                            Text { text: "Type"; color: #94a3b8; font-size: 11px; width: 48px; }
+                            Text { text: selected-connection-type; color: #0f172a; font-size: 11px; font-weight: 500; }
                         }
                     }
                 }
 
                 // Divider
-                Rectangle {
-                    height: 1px;
-                    background: #e2e8f0;
+                Rectangle { height: 1px; background: #e2e8f0; }
+
+                // Barcode Printer Status
+                VerticalBox {
+                    padding-top: 20px;
+                    padding-bottom: 12px;
+                    spacing: 8px;
+
+                    SectionTitle { label: "BARCODE PRINTER"; }
+
+                    StatusBadge {
+                        active: barcode-is-connected;
+                        label: barcode-is-connected ? "Connected" : "Disconnected";
+                    }
+
+                    if barcode-is-connected: VerticalBox {
+                        spacing: 4px;
+
+                        HorizontalBox {
+                            Text { text: "Device"; color: #94a3b8; font-size: 11px; width: 48px; }
+                            Text { text: barcode-device; color: #0f172a; font-size: 11px; font-weight: 500; overflow: elide; }
+                        }
+                        HorizontalBox {
+                            Text { text: "Proto"; color: #94a3b8; font-size: 11px; width: 48px; }
+                            Text { text: barcode-protocol; color: #0f172a; font-size: 11px; font-weight: 500; }
+                        }
+                    }
                 }
+
+                // Divider
+                Rectangle { height: 1px; background: #e2e8f0; }
 
                 // Quick Actions
                 VerticalBox {
-                    padding-top: 24px;
-                    spacing: 12px;
+                    padding-top: 20px;
+                    spacing: 10px;
 
-                    SectionTitle {
-                        label: "QUICK ACTIONS";
+                    SectionTitle { label: "QUICK ACTIONS"; }
+
+                    SecondaryButton {
+                        label: "Receipt Test";
+                        disabled: !is-connected || is-loading;
+                        clicked => { test-print(); }
                     }
 
                     SecondaryButton {
-                        label: "Print Test Page";
-                        disabled: !is-connected || is-loading;
-                        clicked => {
-                            test-print();
-                        }
+                        label: "Barcode Test";
+                        disabled: !barcode-is-connected || barcode-is-loading;
+                        clicked => { barcode-test-print(); }
                     }
 
                     SecondaryButton {
                         label: "Save Settings";
                         disabled: is-loading;
-                        clicked => {
-                            save-settings();
-                        }
+                        clicked => { save-settings(); }
                     }
                 }
 
                 // Spacer
-                Rectangle {
-                    vertical-stretch: 1;
-                }
+                Rectangle { vertical-stretch: 1; }
 
                 // Footer
                 VerticalBox {
                     spacing: 4px;
-
-                    Rectangle {
-                        height: 1px;
-                        background: #e2e8f0;
-                    }
-
+                    Rectangle { height: 1px; background: #e2e8f0; }
                     Text {
-                        text: "v1.5.0";
+                        text: "v1.6.0";
                         color: #cbd5e1;
                         font-size: 11px;
                         horizontal-alignment: center;
@@ -671,7 +609,7 @@ icon: @image-url("../assets/favicon.png");
 
                     // Header
                     VerticalBox {
-                        spacing: 8px;
+                        spacing: 6px;
 
                         Text {
                             text: "Printer Setup";
@@ -681,227 +619,446 @@ icon: @image-url("../assets/favicon.png");
                         }
 
                         Text {
-                            text: "Configure your ESC/POS thermal printer connection";
+                            text: "Configure your receipt printer and barcode printer independently";
                             color: #64748b;
-                            font-size: 15px;
+                            font-size: 14px;
                         }
                     }
 
-                    // Connection Type Section
-                    VerticalBox {
-                        spacing: 14px;
+                    // ── RECEIPT PRINTER SECTION ──
+                    Rectangle {
+                        background: #fafafa;
+                        border-radius: 16px;
+                        border-width: 1px;
+                        border-color: #e2e8f0;
 
-                        SectionTitle {
-                            label: "CONNECTION TYPE";
-                        }
+                        VerticalBox {
+                            padding: 24px;
+                            spacing: 20px;
 
-                        HorizontalBox {
-                            spacing: 12px;
-
-                            ConnectionCard {
-                                icon: "⌁";
-                                label: "USB";
-                                selected: selected-connection-type == "USB";
-                                disabled: is-connected;
-                                clicked => {
-                                    selected-connection-type = "USB";
-                                }
-                            }
-
-                            ConnectionCard {
-                                icon: "◉";
-                                label: "Network";
-                                selected: selected-connection-type == "Network";
-                                disabled: is-connected;
-                                clicked => {
-                                    selected-connection-type = "Network";
-                                }
-                            }
-
-                            ConnectionCard {
-                                icon: "▣";
-                                label: "LPT";
-                                selected: selected-connection-type == "LPT";
-                                disabled: is-connected;
-                                clicked => {
-                                    selected-connection-type = "LPT";
-                                }
-                            }
-                        }
-                    }
-
-                    // Device Selection Section
-                    VerticalBox {
-                        spacing: 14px;
-
-                        HorizontalBox {
-                            SectionTitle {
-                                label: "DEVICE";
-                            }
-
-                            Rectangle {
-                                horizontal-stretch: 1;
-                            }
-
-                            Rectangle {
-                                width: 80px;
-                                height: 32px;
-                                background: is-loading ? #f1f5f9 : #0f172a;
-                                border-radius: 8px;
-
-                                Text {
-                                    text: is-loading ? "..." : "Scan";
-                                    color: is-loading ? #94a3b8 : white;
-                                    font-size: 12px;
-                                    font-weight: 600;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-
-                                TouchArea {
-                                    mouse-cursor: (is-loading || is-connected) ? default : pointer;
-                                    clicked => {
-                                        if !is-loading && !is-connected {
-                                            scan-devices();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Device Input
-                        Rectangle {
-                            height: 48px;
-                            background: #f8fafc;
-                            border-radius: 10px;
-                            border-width: 1px;
-                            border-color: #e2e8f0;
-
-                            device-input := LineEdit {
-                                x: 14px;
-                                y: 0px;
-                                width: parent.width - 28px;
-                                height: parent.height;
-                                placeholder-text: selected-connection-type == "Network" ? "Enter IP address (e.g., 192.168.1.100)" : selected-connection-type == "LPT" ? "Enter port (e.g., LPT1)" : "Enter device path or select below";
-                                text <=> selected-device;
-                                enabled: !is-connected;
-                            }
-                        }
-
-                        // Available Devices List with Filter
-                        if available-devices.length > 0: VerticalBox {
-                            spacing: 12px;
-                            padding-top: 8px;
-
-                            // Filter Header
+                            // Section header
                             HorizontalBox {
-                                spacing: 8px;
+                                spacing: 10px;
                                 alignment: start;
 
-                                Text {
-                                    text: "Available Devices";
-                                    color: #94a3b8;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
+                                Rectangle {
+                                    width: 32px;
+                                    height: 32px;
+                                    background: #0f172a;
+                                    border-radius: 8px;
+                                    Text {
+                                        text: "🧾";
+                                        font-size: 16px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                VerticalBox {
+                                    spacing: 0px;
+                                    alignment: center;
+                                    Text {
+                                        text: "Receipt Printer";
+                                        color: #0f172a;
+                                        font-size: 16px;
+                                        font-weight: 700;
+                                    }
+                                    Text {
+                                        text: "ESC/POS — USB, Network, or LPT";
+                                        color: #94a3b8;
+                                        font-size: 12px;
+                                    }
+                                }
+
+                                Rectangle { horizontal-stretch: 1; }
+
+                                StatusBadge {
+                                    active: is-connected;
+                                    label: is-connected ? "Online" : "Offline";
+                                }
+                            }
+
+                    // Connection type row
+                            HorizontalBox {
+                                spacing: 10px;
+
+                                ConnectionCard {
+                                    icon: "⌁"; label: "USB";
+                                    selected: selected-connection-type == "USB";
+                                    disabled: is-connected;
+                                    clicked => { selected-connection-type = "USB"; }
+                                }
+                                ConnectionCard {
+                                    icon: "◉"; label: "Network";
+                                    selected: selected-connection-type == "Network";
+                                    disabled: is-connected;
+                                    clicked => { selected-connection-type = "Network"; }
+                                }
+                                ConnectionCard {
+                                    icon: "▣"; label: "LPT";
+                                    selected: selected-connection-type == "LPT";
+                                    disabled: is-connected;
+                                    clicked => { selected-connection-type = "LPT"; }
+                                }
+                            }
+
+                            // Device input + scan
+                            HorizontalBox {
+                                spacing: 10px;
+
+                                Rectangle {
+                                    height: 44px;
+                                    horizontal-stretch: 1;
+                                    background: #f8fafc;
+                                    border-radius: 10px;
+                                    border-width: 1px;
+                                    border-color: #e2e8f0;
+
+                                    LineEdit {
+                                        x: 12px; y: 0px;
+                                        width: parent.width - 24px;
+                                        height: parent.height;
+                                        placeholder-text: selected-connection-type == "Network" ? "IP address (e.g. 192.168.1.100)" : "Device path (e.g. COM3)";
+                                        text <=> selected-device;
+                                        enabled: !is-connected;
+                                    }
                                 }
 
                                 Rectangle {
-                                    width: 8px;
-                                }
-
-                                // Filter Chips
-                                FilterChip {
-                                    label: "All";
-                                    active: device-filter == "All";
-                                    count: available-devices.length;
-                                    clicked => {
-                                        device-filter = "All";
+                                    width: 72px;
+                                    height: 44px;
+                                    background: (is-loading || is-connected) ? #f1f5f9 : #0f172a;
+                                    border-radius: 10px;
+                                    Text {
+                                        text: is-loading ? "..." : "Scan";
+                                        color: (is-loading || is-connected) ? #94a3b8 : white;
+                                        font-size: 13px; font-weight: 600;
+                                        horizontal-alignment: center; vertical-alignment: center;
                                     }
-                                }
-
-                                FilterChip {
-                                    label: "USB";
-                                    active: device-filter == "USB";
-                                    clicked => {
-                                        device-filter = "USB";
-                                    }
-                                }
-
-                                FilterChip {
-                                    label: "Network";
-                                    active: device-filter == "Network";
-                                    clicked => {
-                                        device-filter = "Network";
-                                    }
-                                }
-
-                                FilterChip {
-                                    label: "LPT";
-                                    active: device-filter == "LPT";
-                                    clicked => {
-                                        device-filter = "LPT";
+                                    TouchArea {
+                                        mouse-cursor: (is-loading || is-connected) ? default : pointer;
+                                        clicked => { if !is-loading && !is-connected { scan-devices(); } }
                                     }
                                 }
                             }
 
-                            // Filtered Device List
-                            VerticalBox {
-                                spacing: 8px;
-
+                            // Device list
+                            if available-devices.length > 0: VerticalBox {
+                                spacing: 6px;
                                 for device in available-devices: DeviceItem {
-                                    visible: device-filter == "All" || device.type == device-filter;
+                                    visible: device-filter == "All" || device.type == selected-connection-type;
                                     path: device.path;
                                     description: device.description;
                                     device-type: device.type;
                                     selected: selected-device == device.path;
-                                    clicked => {
-                                        selected-device = device.path;
+                                    clicked => { selected-device = device.path; }
+                                }
+                            }
+
+                            // Connect / Disconnect
+                            HorizontalBox {
+                                spacing: 10px;
+                                if !is-connected: PrimaryButton {
+                                    label: "Connect Receipt Printer";
+                                    disabled: selected-device == "";
+                                    loading: is-loading;
+                                    horizontal-stretch: 1;
+                                    clicked => { connect-printer(selected-connection-type, selected-device); }
+                                }
+                                if is-connected: PrimaryButton {
+                                    label: "Disconnect";
+                                    bg: #dc2626;
+                                    horizontal-stretch: 1;
+                                    clicked => { disconnect-printer(); }
+                                }
+                            }
+
+                            if status-message != "": Toast {
+                                message: status-message;
+                                type: toast-type;
+                            }
+                        }
+                    }
+
+                    // ── BARCODE PRINTER SECTION ──
+                    Rectangle {
+                        background: #fafafa;
+                        border-radius: 16px;
+                        border-width: 1px;
+                        border-color: #e2e8f0;
+
+                        VerticalBox {
+                            padding: 24px;
+                            spacing: 20px;
+
+                            // Section header
+                            HorizontalBox {
+                                spacing: 10px;
+                                alignment: start;
+
+                                Rectangle {
+                                    width: 32px;
+                                    height: 32px;
+                                    background: #1e3a5f;
+                                    border-radius: 8px;
+                                    Text {
+                                        text: "📦";
+                                        font-size: 16px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                VerticalBox {
+                                    spacing: 0px;
+                                    alignment: center;
+                                    Text {
+                                        text: "Barcode Printer";
+                                        color: #0f172a;
+                                        font-size: 16px;
+                                        font-weight: 700;
+                                    }
+                                    Text {
+                                        text: "TSPL / ZPL / EPL — Aokia AK-3001 & compatible";
+                                        color: #94a3b8;
+                                        font-size: 12px;
+                                    }
+                                }
+
+                                Rectangle { horizontal-stretch: 1; }
+
+                                StatusBadge {
+                                    active: barcode-is-connected;
+                                    label: barcode-is-connected ? "Online" : "Offline";
+                                }
+                            }
+
+                            // Connection type
+                            HorizontalBox {
+                                spacing: 10px;
+
+                                ConnectionCard {
+                                    icon: "⌁"; label: "USB";
+                                    selected: barcode-connection-type == "USB";
+                                    disabled: barcode-is-connected;
+                                    clicked => { barcode-connection-type = "USB"; }
+                                }
+                                ConnectionCard {
+                                    icon: "◉"; label: "Network";
+                                    selected: barcode-connection-type == "Network";
+                                    disabled: barcode-is-connected;
+                                    clicked => { barcode-connection-type = "Network"; }
+                                }
+                                ConnectionCard {
+                                    icon: "▣"; label: "LPT";
+                                    selected: barcode-connection-type == "LPT";
+                                    disabled: barcode-is-connected;
+                                    clicked => { barcode-connection-type = "LPT"; }
+                                }
+                            }
+
+                            // Device + protocol row
+                            HorizontalBox {
+                                spacing: 10px;
+
+                                // Device input
+                                Rectangle {
+                                    height: 44px;
+                                    horizontal-stretch: 1;
+                                    background: #f8fafc;
+                                    border-radius: 10px;
+                                    border-width: 1px;
+                                    border-color: #e2e8f0;
+
+                                    LineEdit {
+                                        x: 12px; y: 0px;
+                                        width: parent.width - 24px;
+                                        height: parent.height;
+                                        placeholder-text: barcode-connection-type == "Network" ? "IP:port (e.g. 192.168.1.101:9100)" : "Device path (e.g. COM5)";
+                                        text <=> barcode-device;
+                                        enabled: !barcode-is-connected;
+                                    }
+                                }
+
+                                // Protocol selector
+                                VerticalBox {
+                                    spacing: 4px;
+                                    width: 130px;
+                                    alignment: center;
+
+                                    Text { text: "Protocol"; color: #94a3b8; font-size: 11px; font-weight: 600; }
+
+                                    HorizontalBox {
+                                        spacing: 6px;
+
+                                        Rectangle {
+                                            height: 32px;
+                                            horizontal-stretch: 1;
+                                            background: barcode-protocol == "TSPL" ? #0f172a : #ffffff;
+                                            border-radius: 8px;
+                                            border-width: 1px;
+                                            border-color: barcode-protocol == "TSPL" ? #0f172a : #e2e8f0;
+                                            Text {
+                                                text: "TSPL";
+                                                color: barcode-protocol == "TSPL" ? white : #64748b;
+                                                font-size: 11px; font-weight: 600;
+                                                horizontal-alignment: center; vertical-alignment: center;
+                                            }
+                                            TouchArea {
+                                                mouse-cursor: barcode-is-connected ? default : pointer;
+                                                clicked => { if !barcode-is-connected { barcode-protocol = "TSPL"; } }
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            height: 32px;
+                                            horizontal-stretch: 1;
+                                            background: barcode-protocol == "ZPL" ? #0f172a : #ffffff;
+                                            border-radius: 8px;
+                                            border-width: 1px;
+                                            border-color: barcode-protocol == "ZPL" ? #0f172a : #e2e8f0;
+                                            Text {
+                                                text: "ZPL";
+                                                color: barcode-protocol == "ZPL" ? white : #64748b;
+                                                font-size: 11px; font-weight: 600;
+                                                horizontal-alignment: center; vertical-alignment: center;
+                                            }
+                                            TouchArea {
+                                                mouse-cursor: barcode-is-connected ? default : pointer;
+                                                clicked => { if !barcode-is-connected { barcode-protocol = "ZPL"; } }
+                                            }
+                                        }
+
+                                        Rectangle {
+                                            height: 32px;
+                                            horizontal-stretch: 1;
+                                            background: barcode-protocol == "EPL" ? #0f172a : #ffffff;
+                                            border-radius: 8px;
+                                            border-width: 1px;
+                                            border-color: barcode-protocol == "EPL" ? #0f172a : #e2e8f0;
+                                            Text {
+                                                text: "EPL";
+                                                color: barcode-protocol == "EPL" ? white : #64748b;
+                                                font-size: 11px; font-weight: 600;
+                                                horizontal-alignment: center; vertical-alignment: center;
+                                            }
+                                            TouchArea {
+                                                mouse-cursor: barcode-is-connected ? default : pointer;
+                                                clicked => { if !barcode-is-connected { barcode-protocol = "EPL"; } }
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        }
-                    }
 
-                    // Connect Button
-                    HorizontalBox {
-                        spacing: 12px;
+                            // Label dimensions + DPI row
+                            HorizontalBox {
+                                spacing: 12px;
 
-                        if !is-connected: PrimaryButton {
-                            label: "Connect Printer";
-                            disabled: selected-device == "";
-                            loading: is-loading;
-                            horizontal-stretch: 1;
-                            clicked => {
-                                connect-printer(selected-connection-type, selected-device);
+                                VerticalBox {
+                                    spacing: 4px;
+                                    horizontal-stretch: 1;
+                                    Text { text: "Width (mm)"; color: #94a3b8; font-size: 11px; font-weight: 600; }
+                                    Rectangle {
+                                        height: 40px;
+                                        background: #f8fafc;
+                                        border-radius: 8px;
+                                        border-width: 1px;
+                                        border-color: #e2e8f0;
+                                        LineEdit {
+                                            x: 10px; y: 0px;
+                                            width: parent.width - 20px;
+                                            height: parent.height;
+                                            input-type: number;
+                                            placeholder-text: "50";
+                                            text: barcode-width-mm;
+                                            enabled: !barcode-is-connected;
+                                        }
+                                    }
+                                }
+
+                                VerticalBox {
+                                    spacing: 4px;
+                                    horizontal-stretch: 1;
+                                    Text { text: "Height (mm)"; color: #94a3b8; font-size: 11px; font-weight: 600; }
+                                    Rectangle {
+                                        height: 40px;
+                                        background: #f8fafc;
+                                        border-radius: 8px;
+                                        border-width: 1px;
+                                        border-color: #e2e8f0;
+                                        LineEdit {
+                                            x: 10px; y: 0px;
+                                            width: parent.width - 20px;
+                                            height: parent.height;
+                                            input-type: number;
+                                            placeholder-text: "30";
+                                            text: barcode-height-mm;
+                                            enabled: !barcode-is-connected;
+                                        }
+                                    }
+                                }
+
+                                VerticalBox {
+                                    spacing: 4px;
+                                    horizontal-stretch: 1;
+                                    Text { text: "DPI"; color: #94a3b8; font-size: 11px; font-weight: 600; }
+                                    Rectangle {
+                                        height: 40px;
+                                        background: #f8fafc;
+                                        border-radius: 8px;
+                                        border-width: 1px;
+                                        border-color: #e2e8f0;
+                                        LineEdit {
+                                            x: 10px; y: 0px;
+                                            width: parent.width - 20px;
+                                            height: parent.height;
+                                            input-type: number;
+                                            placeholder-text: "203";
+                                            text: barcode-dpi;
+                                            enabled: !barcode-is-connected;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Connect / Disconnect
+                            HorizontalBox {
+                                spacing: 10px;
+                                if !barcode-is-connected: PrimaryButton {
+                                    label: "Connect Barcode Printer";
+                                    bg: #1e3a5f;
+                                    disabled: barcode-device == "";
+                                    loading: barcode-is-loading;
+                                    horizontal-stretch: 1;
+                                    clicked => {
+                                        barcode-connect-printer(
+                                            barcode-connection-type,
+                                            barcode-device,
+                                            barcode-protocol,
+                                            barcode-width-mm,
+                                            barcode-height-mm,
+                                            barcode-dpi
+                                        );
+                                    }
+                                }
+                                if barcode-is-connected: PrimaryButton {
+                                    label: "Disconnect";
+                                    bg: #dc2626;
+                                    horizontal-stretch: 1;
+                                    clicked => { barcode-disconnect-printer(); }
+                                }
+                            }
+
+                            if barcode-status-message != "": Toast {
+                                message: barcode-status-message;
+                                type: barcode-toast-type;
                             }
                         }
-
-                        if is-connected: PrimaryButton {
-                            label: "Disconnect";
-                            bg: #dc2626;
-                            horizontal-stretch: 1;
-                            clicked => {
-                                disconnect-printer();
-                            }
-                        }
-                    }
-
-                    // Info Card
-                    InfoCard {
-                        title: "Supported Printers";
-                        content: "Epson TM-T88 Series • Star TSP143/654 • Any ESC/POS compatible printer\nSupports USB, Network (Ethernet), and LPT connections";
-                    }
-
-                    // Toast Message
-                    if status-message != "": Toast {
-                        message: status-message;
-                        type: toast-type;
                     }
 
                     // Bottom spacer
-                    Rectangle {
-                        vertical-stretch: 1;
-                    }
+                    Rectangle { vertical-stretch: 1; }
                 }
             }
         }

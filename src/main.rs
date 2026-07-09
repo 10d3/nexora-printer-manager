@@ -17,6 +17,8 @@ mod http_server;
 mod image_print;
 mod template_render;
 mod logo_cache;
+mod barcode_printer;
+pub use barcode_printer::{BarcodePrinterConfig, BarcodeType, BarcodeLabelRequest};
 
 pub use template_render::{
     Element, ReceiptData, ReceiptItem, ReceiptTemplate, Section, TemplateLayout, TemplateRenderer,
@@ -674,6 +676,233 @@ impl PrinterManager {
     }
 }
 
+// ==================== Barcode Printer Manager ====================
+
+pub struct BarcodePrinterManager {
+    pub connection: Option<PrinterConnection>,
+    pub config: Option<BarcodePrinterConfig>,
+}
+
+impl BarcodePrinterManager {
+    pub fn new() -> Self {
+        Self {
+            connection: None,
+            config: None,
+        }
+    }
+
+    pub fn connect(&mut self, config: BarcodePrinterConfig) -> Result<(), String> {
+        log::info!(
+            "Connecting to barcode printer via {} at {}",
+            config.connection_type,
+            config.device_path
+        );
+
+        match config.connection_type.as_str() {
+            "USB" => {
+                if config.device_path.starts_with(r"\\.\") || config.device_path.starts_with("COM") {
+                    #[cfg(target_os = "windows")]
+                    {
+                        let mut wide: Vec<u16> = config.device_path.encode_utf16().collect();
+                        wide.push(0);
+                        const GENERIC_WRITE: u32 = 0x40000000;
+                        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+                        use windows_sys::Win32::Storage::FileSystem::{
+                            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
+                            OPEN_EXISTING,
+                        };
+                        let handle = unsafe {
+                            CreateFileW(
+                                wide.as_ptr(),
+                                GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                std::ptr::null(),
+                                OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL,
+                                std::ptr::null_mut(),
+                            )
+                        };
+                        if handle == INVALID_HANDLE_VALUE {
+                            self.connection = Some(PrinterConnection::System(config.device_path.clone()));
+                        } else {
+                            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+                            self.connection = Some(PrinterConnection::USB(config.device_path.clone()));
+                        }
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        self.connection = Some(PrinterConnection::USB(config.device_path.clone()));
+                    }
+                } else {
+                    self.connection = Some(PrinterConnection::System(config.device_path.clone()));
+                }
+            }
+            "Network" => {
+                if !config.device_path.contains(':') {
+                    let mut path = config.device_path.clone();
+                    path.push_str(":9100");
+                    self.connection = Some(PrinterConnection::Network(path));
+                } else {
+                    self.connection = Some(PrinterConnection::Network(config.device_path.clone()));
+                }
+            }
+            "LPT" => {
+                #[cfg(target_os = "windows")]
+                {
+                    self.connection = Some(PrinterConnection::LPT(config.device_path.clone()));
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    return Err("LPT ports are only supported on Windows.".to_string());
+                }
+            }
+            _ => {
+                return Err(format!("Unsupported connection type: {}", config.connection_type))
+            }
+        };
+
+        self.config = Some(config);
+        log::info!("Barcode printer connected successfully");
+        Ok(())
+    }
+
+    pub fn disconnect(&mut self) {
+        self.connection = None;
+        log::info!("Barcode printer disconnected");
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connection.is_some()
+    }
+
+    pub fn print_label(&mut self, req: &BarcodeLabelRequest) -> Result<(), String> {
+        let config = self.config.as_ref().ok_or("Barcode printer not configured")?;
+        let bytes = barcode_printer::build_label(config, req);
+        self.print_raw(&bytes).map_err(|e| e.to_string())
+    }
+
+    pub fn print_test_label(&mut self) -> Result<(), String> {
+        let config = self.config.as_ref().ok_or("Barcode printer not configured")?.clone();
+        let bytes = barcode_printer::build_test_label(&config);
+        self.print_raw(&bytes).map_err(|e| e.to_string())
+    }
+
+    pub fn print_raw(&mut self, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        let connection = self.connection.as_ref().ok_or("Barcode printer not connected")?;
+        match connection {
+            PrinterConnection::Console => {
+                println!("[Barcode label data: {} bytes]", bytes.len());
+            }
+            PrinterConnection::USB(path) | PrinterConnection::LPT(path) => {
+                let path = path.clone();
+                #[cfg(target_os = "windows")]
+                self.write_to_device_windows(&path, bytes)?;
+                #[cfg(not(target_os = "windows"))]
+                {
+                    use std::io::Write;
+                    let mut file = std::fs::File::create(&path)?;
+                    file.write_all(bytes)?;
+                }
+            }
+            PrinterConnection::Network(addr) => {
+                use std::io::Write;
+                let addr = addr.clone();
+                let mut stream = std::net::TcpStream::connect(&addr)?;
+                stream.write_all(bytes)?;
+            }
+            PrinterConnection::System(name) => {
+                let name = name.clone();
+                #[cfg(target_os = "windows")]
+                self.write_to_system_printer_windows(&name, bytes)?;
+                #[cfg(not(target_os = "windows"))]
+                return Err("System printer only supported on Windows".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn write_to_device_windows(&self, path: &str, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            OPEN_EXISTING,
+        };
+        const GENERIC_WRITE: u32 = 0x40000000;
+        let mut wide: Vec<u16> = path.encode_utf16().collect();
+        wide.push(0);
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            return Err(format!("Cannot open {}: Windows error {}", path, err).into());
+        }
+        let mut written: u32 = 0;
+        let success = unsafe {
+            WriteFile(
+                handle,
+                data.as_ptr(),
+                data.len() as u32,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        };
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        if success == 0 {
+            let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            return Err(format!("Write failed on {}: Windows error {}", path, err).into());
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn write_to_system_printer_windows(&self, name: &str, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        use windows_sys::Win32::Graphics::Printing::{
+            ClosePrinter, EndDocPrinter, EndPagePrinter, OpenPrinterW, StartDocPrinterW,
+            StartPagePrinter, WritePrinter, DOC_INFO_1W, PRINTER_HANDLE,
+        };
+        let mut wide_name: Vec<u16> = name.encode_utf16().collect();
+        wide_name.push(0);
+        let mut h_printer: PRINTER_HANDLE = unsafe { std::mem::zeroed() };
+        let success = unsafe {
+            OpenPrinterW(wide_name.as_ptr() as *mut u16, &mut h_printer, std::ptr::null_mut())
+        };
+        if success == 0 {
+            return Err(format!("Could not open barcode printer '{}'", name).into());
+        }
+        let doc_name = "Nexora Barcode\0".encode_utf16().collect::<Vec<u16>>();
+        let data_type = "RAW\0".encode_utf16().collect::<Vec<u16>>();
+        let doc_info = DOC_INFO_1W {
+            pDocName: doc_name.as_ptr() as *mut u16,
+            pOutputFile: std::ptr::null_mut(),
+            pDatatype: data_type.as_ptr() as *mut u16,
+        };
+        let job_id = unsafe { StartDocPrinterW(h_printer, 1, &doc_info as *const DOC_INFO_1W) };
+        if job_id == 0 {
+            unsafe { ClosePrinter(h_printer) };
+            return Err("Could not start barcode print job".into());
+        }
+        unsafe {
+            StartPagePrinter(h_printer);
+            let mut written = 0;
+            WritePrinter(h_printer, data.as_ptr() as *const _, data.len() as u32, &mut written);
+            EndPagePrinter(h_printer);
+            EndDocPrinter(h_printer);
+            ClosePrinter(h_printer);
+        }
+        Ok(())
+    }
+}
+
 // ==================== Device Detection ====================
 
 fn scan_available_devices() -> Vec<Device> {
@@ -839,6 +1068,28 @@ fn load_config() -> Result<Option<PrinterConfig>, String> {
     Ok(Some(config))
 }
 
+fn save_barcode_config(config: &BarcodePrinterConfig) -> Result<(), String> {
+    let path = get_config_path()?.with_file_name("barcode_config.json");
+    let json = serde_json::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize barcode config: {}", e))?;
+    std::fs::write(path, json).map_err(|e| format!("Failed to write barcode config: {}", e))?;
+    log::info!("Barcode configuration saved");
+    Ok(())
+}
+
+fn load_barcode_config() -> Result<Option<BarcodePrinterConfig>, String> {
+    let path = get_config_path()?.with_file_name("barcode_config.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let json = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read barcode config: {}", e))?;
+    let config: BarcodePrinterConfig = serde_json::from_str(&json)
+        .map_err(|e| format!("Failed to parse barcode config: {}", e))?;
+    log::info!("Barcode configuration loaded");
+    Ok(Some(config))
+}
+
 // ==================== Main Application ====================
 
 fn load_tray_icon() -> tray_icon::Icon {
@@ -889,6 +1140,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create printer manager
     let printer_manager = Arc::new(Mutex::new(PrinterManager::new()));
+
+    // Create barcode printer manager
+    let barcode_manager = Arc::new(Mutex::new(BarcodePrinterManager::new()));
     
     // Load logos from disk cache
     {
@@ -905,7 +1159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let args: Vec<String> = env::args().collect();
         let minimized = args.contains(&"--minimized".to_string());
 
-        log::info!("Starting Nexora Printer Manager v1.5.1");
+        log::info!("Starting Nexora Printer Manager v1.6.0");
 
         // Setup Auto-launch
         let autostart = autostart::Autostart::new();
@@ -947,8 +1201,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Start HTTP server
         let printer_manager_clone = Arc::clone(&printer_manager);
+        let barcode_manager_clone = Arc::clone(&barcode_manager);
         tokio::spawn(async move {
-            if let Err(e) = http_server::start_server(printer_manager_clone, 8080).await {
+            if let Err(e) = http_server::start_server(printer_manager_clone, barcode_manager_clone, 8080).await {
                 log::error!("HTTP server error: {}", e);
             } else {
                 log::info!("HTTP server started on port 8080");
@@ -1055,6 +1310,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         } else {
             log::debug!("No saved configuration found at startup");
+        }
+
+        // Load barcode printer config and auto-connect
+        if let Ok(Some(bc_config)) = load_barcode_config() {
+            let mut bc_manager = barcode_manager.lock().unwrap();
+            match bc_manager.connect(bc_config) {
+                Ok(_) => {
+                    ui.set_barcode_is_connected(true);
+                    ui.set_barcode_status_message("\u2713 Auto-connected to barcode printer!".into());
+                    log::info!("Auto-connected to barcode printer");
+                }
+                Err(e) => {
+                    ui.set_barcode_is_connected(false);
+                    ui.set_barcode_status_message(format!("Auto-connect failed: {}", e).into());
+                    log::warn!("Barcode auto-connect failed: {}", e);
+                }
+            }
         }
 
         if !minimized {
@@ -1204,6 +1476,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     ui.set_status_message("✓ Settings saved successfully!".into());
                 }
+            });
+        }
+
+        // Barcode printer connect callback
+        {
+            let ui_handle = ui.as_weak();
+            let bc_manager = Arc::clone(&barcode_manager);
+
+            ui.on_barcode_connect_printer(move |conn_type, device, protocol, width_mm, height_mm, dpi| {
+                let ui = ui_handle.unwrap();
+                ui.set_barcode_is_loading(true);
+                ui.set_barcode_status_message("Connecting to barcode printer...".into());
+
+                let config = BarcodePrinterConfig {
+                    connection_type: conn_type.to_string(),
+                    device_path: device.to_string(),
+                    protocol: protocol.to_string(),
+                    label_width_mm: width_mm as u32,
+                    label_height_mm: height_mm as u32,
+                    dpi: dpi as u32,
+                };
+
+                let mut manager = bc_manager.lock().unwrap();
+                if let Err(e) = manager.connect(config.clone()) {
+                    ui.set_barcode_is_connected(false);
+                    ui.set_barcode_status_message(format!("\u2717 Connection failed: {}", e).into());
+                    log::error!("Barcode connection failed: {}", e);
+                } else {
+                    ui.set_barcode_is_connected(true);
+                    ui.set_barcode_status_message("\u2713 Barcode printer connected!".into());
+                    if let Err(e) = save_barcode_config(&config) {
+                        log::warn!("Failed to save barcode config: {}", e);
+                    }
+                }
+                ui.set_barcode_is_loading(false);
+            });
+        }
+
+        // Barcode printer disconnect callback
+        {
+            let ui_handle = ui.as_weak();
+            let bc_manager = Arc::clone(&barcode_manager);
+
+            ui.on_barcode_disconnect_printer(move || {
+                let ui = ui_handle.unwrap();
+                let mut manager = bc_manager.lock().unwrap();
+                manager.disconnect();
+                ui.set_barcode_is_connected(false);
+                ui.set_barcode_status_message("Barcode printer disconnected".into());
+            });
+        }
+
+        // Barcode test print callback
+        {
+            let ui_handle = ui.as_weak();
+            let bc_manager = Arc::clone(&barcode_manager);
+
+            ui.on_barcode_test_print(move || {
+                let ui = ui_handle.unwrap();
+                ui.set_barcode_is_loading(true);
+                ui.set_barcode_status_message("Printing barcode test label...".into());
+
+                let mut manager = bc_manager.lock().unwrap();
+                match manager.print_test_label() {
+                    Ok(_) => {
+                        ui.set_barcode_status_message("\u2713 Test label printed successfully!".into());
+                    }
+                    Err(e) => {
+                        ui.set_barcode_status_message(format!("\u2717 Print failed: {}", e).into());
+                        log::error!("Barcode test print failed: {}", e);
+                    }
+                }
+                ui.set_barcode_is_loading(false);
             });
         }
 
