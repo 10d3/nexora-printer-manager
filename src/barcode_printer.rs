@@ -63,6 +63,12 @@ pub struct BarcodeLabelRequest {
     pub label_text: Option<String>,
     /// Number of copies to print. Defaults to 1 when `None`.
     pub copies: Option<u32>,
+    /// Override the configured label width for this job only (mm).
+    /// Falls back to `BarcodePrinterConfig::label_width_mm` when `None`.
+    pub label_width_mm: Option<u32>,
+    /// Override the configured label height for this job only (mm).
+    /// Falls back to `BarcodePrinterConfig::label_height_mm` when `None`.
+    pub label_height_mm: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -99,12 +105,14 @@ pub fn build_test_label(config: &BarcodePrinterConfig) -> Vec<u8> {
 
 fn build_tspl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8> {
     let copies = req.copies.unwrap_or(1);
+    let width  = req.label_width_mm.unwrap_or(config.label_width_mm);
+    let height = req.label_height_mm.unwrap_or(config.label_height_mm);
     let mut cmds = String::new();
 
     // Label setup
     cmds.push_str(&format!(
         "SIZE {} mm, {} mm\r\n",
-        config.label_width_mm, config.label_height_mm
+        width, height
     ));
     cmds.push_str("GAP 2 mm, 0 mm\r\n");
     cmds.push_str("DIRECTION 0\r\n");
@@ -281,6 +289,8 @@ mod tests {
             barcode_type: BarcodeType::Code128,
             label_text: Some("Test Item".to_string()),
             copies: Some(1),
+            label_width_mm: None,
+            label_height_mm: None,
         }
     }
 
@@ -315,6 +325,20 @@ mod tests {
         let req = test_request();
         let output = String::from_utf8(build_label(&config, &req)).unwrap();
         assert!(output.contains("SIZE 100 mm, 50 mm\r\n"));
+    }
+
+    #[test]
+    fn test_build_tspl_size_override() {
+        // Per-job size should override the config values
+        let config = test_config("TSPL");
+        let req = BarcodeLabelRequest {
+            label_width_mm: Some(70),
+            label_height_mm: Some(40),
+            ..test_request()
+        };
+        let output = String::from_utf8(build_label(&config, &req)).unwrap();
+        assert!(output.contains("SIZE 70 mm, 40 mm\r\n"),
+            "Expected SIZE 70 mm, 40 mm but got: {}", output);
     }
 
     #[test]

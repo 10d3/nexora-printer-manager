@@ -140,9 +140,13 @@ pub struct BarcodePrinterConnectRequest {
 #[derive(Debug, Deserialize)]
 pub struct PrintBarcodeRequest {
     pub barcode_data: String,
-    pub barcode_type: Option<String>,   // defaults to CODE128
+    pub barcode_type: Option<String>,    // defaults to CODE128
     pub label_text: Option<String>,
     pub copies: Option<u32>,
+    /// Override the configured label width for this job only (mm).
+    pub label_width_mm: Option<u32>,
+    /// Override the configured label height for this job only (mm).
+    pub label_height_mm: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -755,6 +759,8 @@ async fn print_barcode(
         barcode_type,
         label_text: request.label_text,
         copies: request.copies,
+        label_width_mm: request.label_width_mm,
+        label_height_mm: request.label_height_mm,
     };
 
     match manager.print_label(&req) {
