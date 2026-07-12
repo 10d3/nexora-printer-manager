@@ -361,6 +361,19 @@ Content-Type: application/json
 | `label_width_mm` | number | ❌ | Override label width for this job only (mm) |
 | `label_height_mm` | number | ❌ | Override label height for this job only (mm) |
 
+**How label layout works (auto-calculated):**
+
+The printer engine automatically fits the barcode to your label — you do not need to specify dot coordinates or bar widths. For every print job it computes:
+
+| Calculated value | How it is derived |
+|---|---|
+| Narrow bar width (dots) | `floor(printable_width / symbol_modules)`, clamped 1–3 |
+| Barcode height (dots) | Full printable height, minus text line height when `label_text` is set |
+| Text Y position (dots) | Barcode bottom + 4-dot gap — never overflows the label |
+| Margins | 3 % of each dimension, minimum 3 dots per side |
+
+> **Small label tip:** On a 32×25 mm label the engine automatically reduces the narrow bar to **1 dot** so that a 12-digit CODE128 barcode (121 symbol modules) fits within the 240 available dots. On wider labels (e.g. 50 mm) it uses 2–3 dots per bar for better scannability.
+
 **Supported `barcode_type` values:**
 
 | Value | Format | Use case |
