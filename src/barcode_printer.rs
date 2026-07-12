@@ -129,6 +129,12 @@ fn estimate_modules(barcode_type: &BarcodeType, data_len: usize) -> u32 {
     }
 }
 
+struct TextLine {
+    text: String,
+    x: u32,
+    y: u32,
+}
+
 /// All dot-unit coordinates needed to lay out a label.
 ///
 /// Computed once from the label's physical dimensions and DPI, then used by
@@ -155,31 +161,28 @@ struct LabelLayout {
     /// QR cell size in dots.
     qr_cell: u32,
     // ── text position ────────────────────────────────────────────────────────
-    /// Left edge of the label-text line, horizontally centred.
-    text_x: u32,
-    /// Top edge of the label-text line, placed below the barcode with a gap.
-    text_y: u32,
-    /// TSPL font ID ("2" or "3").
+    /// Computed text lines (auto-shrunk and/or wrapped), horizontally centred.
+    text_lines: Vec<TextLine>,
+    /// TSPL font ID ("1", "2" or "3").
     tspl_font: &'static str,
-    /// EPL font ID (1 or 3).
+    /// EPL font ID (1, 3 or 4).
     epl_font: u32,
     /// ZPL / EPL font height in dots.
     font_h: u32,
 }
 
-/// Estimate the rendered width (dots) of a text string for a given TSPL font.
-///
-/// These are approximate values at x-multiplier = 1.
-fn estimate_text_width(text: &str, tspl_font: &str) -> u32 {
-    let chars = text.len() as u32;
-    // Average character widths per TSPL built-in font (empirically tuned).
-    let char_w: u32 = match tspl_font {
-        "2" => 10,
-        "3" => 14,
-        _   => 12,
-    };
-    chars * char_w
+struct FontMetrics {
+    tspl: &'static str,
+    epl: u32,
+    h: u32,
+    char_w: u32,
 }
+
+const FONTS: [FontMetrics; 3] = [
+    FontMetrics { tspl: "3", epl: 4, h: 24, char_w: 14 }, // Large
+    FontMetrics { tspl: "2", epl: 3, h: 20, char_w: 10 }, // Medium
+    FontMetrics { tspl: "1", epl: 1, h: 12, char_w: 8 },  // Small
+];
 
 impl LabelLayout {
     /// Compute a centred layout for a label.
@@ -208,35 +211,83 @@ impl LabelLayout {
         let printable_w = total_w.saturating_sub(2 * margin_x);
         let printable_h = total_h.saturating_sub(2 * margin_y);
 
-        // ── font metrics ──────────────────────────────────────────────────
-        // Use smaller font on narrow labels (< 38 mm).
-        let (tspl_font, epl_font, font_h) = if printable_w > mm_to_dots(35, dpi) {
-            ("3", 3_u32, 24_u32)
+        // ── font selection & wrapping ─────────────────────────────────────
+        let ideal_font_idx = if printable_w > mm_to_dots(35, dpi) { 0 } else { 1 };
+        let mut chosen_font = &FONTS[ideal_font_idx];
+        let mut lines_str = Vec::new();
+
+        if let Some(t) = text {
+            let mut current_idx = ideal_font_idx;
+            
+            // 1. Auto-shrink: try smaller fonts until it fits on one line.
+            while current_idx < FONTS.len() {
+                let f = &FONTS[current_idx];
+                let width = (t.len() as u32) * f.char_w;
+                if width <= printable_w || current_idx == FONTS.len() - 1 {
+                    chosen_font = f;
+                    break;
+                }
+                current_idx += 1;
+            }
+
+            // 2. Word wrap: if still too wide on the chosen (smallest) font, split into multiple lines.
+            let width = (t.len() as u32) * chosen_font.char_w;
+            if width > printable_w {
+                let mut current_line = String::new();
+                for word in t.split_whitespace() {
+                    let maybe_line = if current_line.is_empty() {
+                        word.to_string()
+                    } else {
+                        format!("{} {}", current_line, word)
+                    };
+                    
+                    if (maybe_line.len() as u32) * chosen_font.char_w > printable_w {
+                        if !current_line.is_empty() {
+                            lines_str.push(current_line);
+                            current_line = word.to_string();
+                        } else {
+                            // Single word is too long, push it and let it clip.
+                            lines_str.push(word.to_string());
+                            current_line = String::new();
+                        }
+                    } else {
+                        current_line = maybe_line;
+                    }
+                }
+                if !current_line.is_empty() {
+                    lines_str.push(current_line);
+                }
+            } else {
+                lines_str.push(t.to_string());
+            }
+        }
+
+        let line_gap = 2; // gap between text lines
+        let total_text_h = if lines_str.is_empty() {
+            0
         } else {
-            ("2", 1_u32, 16_u32)
+            let num_lines = lines_str.len() as u32;
+            num_lines * chosen_font.h + (num_lines - 1) * line_gap
         };
 
-        let text_gap: u32 = 4; // dots between barcode bottom and text top
-        let has_text = text.is_some();
+        let text_gap: u32 = 4; // dots between barcode bottom and text block top
+        let has_text = !lines_str.is_empty();
 
         // ── barcode height ────────────────────────────────────────────────
         // Cap at 55 % of printable height so bars don't dominate the label.
         let max_barcode_h = ((printable_h as f64 * 0.55).round() as u32).max(20);
         let barcode_h = if has_text {
-            // Also must leave room for the text line.
-            let available = printable_h.saturating_sub(font_h + text_gap);
+            let available = printable_h.saturating_sub(total_text_h + text_gap);
             available.min(max_barcode_h).max(20)
         } else {
             printable_h.min(max_barcode_h).max(20)
         };
 
         // ── vertical centering ────────────────────────────────────────────
-        // Centre the entire content block (barcode [+ text]) in the printable area.
-        let content_h = barcode_h
-            + if has_text { text_gap + font_h } else { 0 };
+        // Centre the entire content block (barcode [+ text_block]) in the printable area.
+        let content_h = barcode_h + if has_text { text_gap + total_text_h } else { 0 };
         let v_padding = printable_h.saturating_sub(content_h) / 2;
         let barcode_y = margin_y + v_padding;
-        let text_y    = barcode_y + barcode_h + text_gap; // 0 when has_text=false
 
         // ── narrow bar width ─────────────────────────────────────────────
         let modules = estimate_modules(barcode_type, data_len);
@@ -256,17 +307,20 @@ impl LabelLayout {
             margin_x
         };
 
-        // Text: centre based on estimated character width.
-        let text_x = if let Some(t) = text {
-            let tw = estimate_text_width(t, tspl_font);
-            if tw < printable_w {
+        // Text lines: horizontally centre each wrapped line.
+        let mut text_lines = Vec::new();
+        let mut current_y = barcode_y + barcode_h + text_gap;
+        
+        for line in lines_str {
+            let tw = (line.len() as u32) * chosen_font.char_w;
+            let x = if tw < printable_w {
                 margin_x + (printable_w - tw) / 2
             } else {
                 margin_x
-            }
-        } else {
-            margin_x
-        };
+            };
+            text_lines.push(TextLine { text: line, x, y: current_y });
+            current_y += chosen_font.h + line_gap;
+        }
 
         // ── QR cell size ──────────────────────────────────────────────────
         // Assume ~29 modules per side for common short data.
@@ -283,11 +337,10 @@ impl LabelLayout {
             narrow,
             wide,
             qr_cell,
-            text_x,
-            text_y,
-            tspl_font,
-            epl_font,
-            font_h,
+            text_lines,
+            tspl_font: chosen_font.tspl,
+            epl_font: chosen_font.epl,
+            font_h: chosen_font.h,
         }
     }
 }
@@ -335,11 +388,11 @@ fn build_tspl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u
         }
     }
 
-    // Optional label text — centred below the barcode
-    if let Some(ref text) = req.label_text {
+    // Optional label text — loops through auto-shrunk/wrapped lines
+    for line in &l.text_lines {
         cmds.push_str(&format!(
             "TEXT {},{},\"{}\",0,1,1,\"{}\"\r\n",
-            l.text_x, l.text_y, l.tspl_font, text
+            line.x, line.y, l.tspl_font, line.text
         ));
     }
 
@@ -375,13 +428,14 @@ fn build_test_label_tspl(config: &BarcodePrinterConfig) -> Vec<u8> {
 
     // Centre the title text.
     let title_x = {
-        let tw = estimate_text_width("NEXORA BARCODE TEST", l.tspl_font);
+        let tw = (19_u32) * FONTS.iter().find(|f| f.tspl == l.tspl_font).unwrap().char_w;
         if tw < l.printable_w {
             let margin_x = (mm_to_dots(config.label_width_mm, config.dpi) as f64 * 0.03)
                 .round() as u32;
             margin_x + (l.printable_w - tw) / 2
         } else {
-            l.text_x
+            // Default to margin if it doesn't fit
+            (mm_to_dots(config.label_width_mm, config.dpi) as f64 * 0.03).round() as u32
         }
     };
 
@@ -401,10 +455,13 @@ fn build_test_label_tspl(config: &BarcodePrinterConfig) -> Vec<u8> {
         "BARCODE {},{},\"128\",{},0,0,{},{},\"123456789012\"\r\n",
         l.barcode_x, barcode_y2, barcode_h2, l.narrow, l.wide
     ));
-    cmds.push_str(&format!(
-        "TEXT {},{},\"{}\",0,1,1,\"Test Label - OK\"\r\n",
-        l.text_x, l.text_y, l.tspl_font
-    ));
+    // Footer
+    if let Some(line) = l.text_lines.first() {
+        cmds.push_str(&format!(
+            "TEXT {},{},\"{}\",0,1,1,\"{}\"\r\n",
+            line.x, line.y, l.tspl_font, line.text
+        ));
+    }
     cmds.push_str("PRINT 1,1\r\n");
     cmds.into_bytes()
 }
@@ -445,13 +502,12 @@ fn build_zpl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
         }
     }
 
-    // Optional label text — centred using ^FB (Field Block)
-    if let Some(ref text) = req.label_text {
-        let fh = l.font_h;
+    // Optional label text — looped if wrapped
+    for line in &l.text_lines {
         // ^FB width, maxLines, lineSpacing, justification('C'=centre), hangingIndent
         cmds.push_str(&format!(
             "^FO0,{}^FB{},1,0,C,0^A0N,{},{}^FD{}^FS\n",
-            l.text_y, l.total_w, fh, fh, text
+            line.y, l.total_w, l.font_h, l.font_h, line.text
         ));
     }
 
@@ -484,10 +540,12 @@ fn build_test_label_zpl(config: &BarcodePrinterConfig) -> Vec<u8> {
         l.barcode_x, barcode_y2, l.narrow, barcode_h2
     ));
     // Footer — centred with ^FB
-    cmds.push_str(&format!(
-        "^FO0,{}^FB{},1,0,C,0^A0N,{},{}^FDTest Label - OK^FS\n",
-        l.text_y, l.total_w, fh, fh
-    ));
+    if let Some(line) = l.text_lines.first() {
+        cmds.push_str(&format!(
+            "^FO0,{}^FB{},1,0,C,0^A0N,{},{}^FDTest Label - OK^FS\n",
+            line.y, l.total_w, fh, fh
+        ));
+    }
     cmds.push_str("^PQ1\n");
     cmds.push_str("^XZ\n");
     cmds.into_bytes()
@@ -519,11 +577,11 @@ fn build_epl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
         req.barcode_data
     ));
 
-    // Optional label text — centred
-    if let Some(ref text) = req.label_text {
+    // Optional label text — loops through auto-shrunk/wrapped lines
+    for line in &l.text_lines {
         cmds.push_str(&format!(
             "A{},{},0,{},1,1,N,\"{}\"\n",
-            l.text_x, l.text_y, l.epl_font, text
+            line.x, line.y, l.epl_font, line.text
         ));
     }
 
@@ -544,10 +602,10 @@ fn build_test_label_epl(config: &BarcodePrinterConfig) -> Vec<u8> {
 
     // Centre the title text.
     let title_x = {
-        let tw = estimate_text_width("NEXORA BARCODE TEST", l.tspl_font);
+        let tw = (19_u32) * FONTS.iter().find(|f| f.tspl == l.tspl_font).unwrap().char_w;
         let margin_x = (mm_to_dots(config.label_width_mm, config.dpi) as f64 * 0.03)
             .round() as u32;
-        if tw < l.printable_w { margin_x + (l.printable_w - tw) / 2 } else { l.text_x }
+        if tw < l.printable_w { margin_x + (l.printable_w - tw) / 2 } else { margin_x }
     };
 
     let mut cmds = String::new();
@@ -560,10 +618,12 @@ fn build_test_label_epl(config: &BarcodePrinterConfig) -> Vec<u8> {
         "B{},{},0,1,{},{},{},N,\"123456789012\"\n",
         l.barcode_x, barcode_y2, l.narrow, l.wide, barcode_h2
     ));
-    cmds.push_str(&format!(
-        "A{},{},0,{},1,1,N,\"Test Label - OK\"\n",
-        l.text_x, l.text_y, l.epl_font
-    ));
+    if let Some(line) = l.text_lines.first() {
+        cmds.push_str(&format!(
+            "A{},{},0,{},1,1,N,\"Test Label - OK\"\n",
+            line.x, line.y, l.epl_font
+        ));
+    }
     cmds.push_str("P1\n");
     cmds.into_bytes()
 }
@@ -660,7 +720,7 @@ mod tests {
     fn test_layout_32x25_text_fits_height() {
         let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("Cola 330ml"));
         let total_h = mm_to_dots(25, 203);
-        let text_bottom = l.text_y + l.font_h;
+        let text_bottom = l.text_lines.last().unwrap().y + l.font_h;
         assert!(
             text_bottom <= total_h,
             "text bottom ({} dots) must fit in label height ({} dots)",
@@ -687,7 +747,7 @@ mod tests {
         let content_h = l.barcode_h + 4 + l.font_h;
         // Content block starts at barcode_y; check it sits within the printable area.
         assert!(l.barcode_y >= margin_y, "content must start at or after top margin");
-        assert!(l.text_y + l.font_h <= total_h, "content must end before bottom of label");
+        assert!(l.text_lines.last().unwrap().y + l.font_h <= total_h, "content must end before bottom of label");
         // Padding above and below should be roughly equal (within 1 dot rounding).
         let pad_top    = l.barcode_y - margin_y;
         let pad_bottom = printable_h.saturating_sub(content_h).saturating_sub(pad_top);

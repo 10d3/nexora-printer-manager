@@ -371,6 +371,7 @@ The printer engine automatically fits the barcode to your label — you do not n
 | Barcode height (dots) | Capped at 55% of printable height so bars don't dominate the label |
 | Horizontal alignment | Barcode and text are both horizontally centered based on their estimated widths |
 | Vertical alignment | The entire content block (barcode + text) is vertically centered on the label |
+| Text size & wrapping | Text automatically shrinks font size if too wide; if still too wide, it word-wraps to multiple lines |
 | Text Y position (dots) | Barcode bottom + 4-dot gap — never overflows the label |
 | Margins | 3 % of each dimension, minimum 3 dots per side |
 
