@@ -135,50 +135,68 @@ fn estimate_modules(barcode_type: &BarcodeType, data_len: usize) -> u32 {
 /// all three protocol builders so no magic numbers appear in command strings.
 struct LabelLayout {
     // ── label canvas ──────────────────────────────────────────────────────────
-    /// Total printable width in dots (after margins).
+    /// Total label width in dots (used by ZPL ^FB centering).
+    total_w: u32,
+    /// Usable width inside margins in dots.
     printable_w: u32,
-    /// Total printable height in dots (after margins).
+    /// Usable height inside margins in dots.
     printable_h: u32,
     // ── barcode position ─────────────────────────────────────────────────────
-    /// Left edge of barcode / QR, in dots from label origin.
+    /// Left edge of the barcode, horizontally centred in the printable area.
     barcode_x: u32,
-    /// Top edge of barcode / QR, in dots from label origin.
+    /// Top edge of the barcode, part of the vertically centred content block.
     barcode_y: u32,
-    /// Height of the barcode bars (or QR cell count) in dots.
+    /// Height of the barcode bars in dots (≤ 55 % of printable height).
     barcode_h: u32,
     /// Narrow bar width in dots (≥ 1).
     narrow: u32,
     /// Wide bar width in dots (= narrow × 2, ≥ 2).
     wide: u32,
-    /// QR cell size in dots (only meaningful for QR barcodes).
+    /// QR cell size in dots.
     qr_cell: u32,
     // ── text position ────────────────────────────────────────────────────────
-    /// Left edge of the label-text line, in dots.
+    /// Left edge of the label-text line, horizontally centred.
     text_x: u32,
-    /// Top edge of the label-text line, in dots.
+    /// Top edge of the label-text line, placed below the barcode with a gap.
     text_y: u32,
     /// TSPL font ID ("2" or "3").
     tspl_font: &'static str,
-    /// ZPL/EPL font height in dots.
+    /// EPL font ID (1 or 3).
+    epl_font: u32,
+    /// ZPL / EPL font height in dots.
     font_h: u32,
 }
 
+/// Estimate the rendered width (dots) of a text string for a given TSPL font.
+///
+/// These are approximate values at x-multiplier = 1.
+fn estimate_text_width(text: &str, tspl_font: &str) -> u32 {
+    let chars = text.len() as u32;
+    // Average character widths per TSPL built-in font (empirically tuned).
+    let char_w: u32 = match tspl_font {
+        "2" => 10,
+        "3" => 14,
+        _   => 12,
+    };
+    chars * char_w
+}
+
 impl LabelLayout {
-    /// Compute the layout for a label.
+    /// Compute a centred layout for a label.
     ///
     /// # Arguments
     /// * `width_mm` / `height_mm` – physical label size
     /// * `dpi`                    – printer resolution
     /// * `barcode_type`           – determines module count formula
     /// * `data_len`               – number of characters in the barcode value
-    /// * `has_text`               – whether a text line will be printed
+    /// * `text`                   – optional label text (used for centering)
     fn compute(
         width_mm: u32,
         height_mm: u32,
         dpi: u32,
         barcode_type: &BarcodeType,
         data_len: usize,
-        has_text: bool,
+        text: Option<&str>,
     ) -> Self {
         let total_w = mm_to_dots(width_mm, dpi);
         let total_h = mm_to_dots(height_mm, dpi);
@@ -192,53 +210,83 @@ impl LabelLayout {
 
         // ── font metrics ──────────────────────────────────────────────────
         // Use smaller font on narrow labels (< 38 mm).
-        let (tspl_font, font_h) = if printable_w > mm_to_dots(35, dpi) {
-            ("3", 24_u32)
+        let (tspl_font, epl_font, font_h) = if printable_w > mm_to_dots(35, dpi) {
+            ("3", 3_u32, 24_u32)
         } else {
-            ("2", 16_u32)
+            ("2", 1_u32, 16_u32)
         };
 
         let text_gap: u32 = 4; // dots between barcode bottom and text top
+        let has_text = text.is_some();
 
-        // ── vertical split ────────────────────────────────────────────────
-        let (barcode_h, text_y) = if has_text {
-            let bh = printable_h
-                .saturating_sub(font_h)
-                .saturating_sub(text_gap)
-                .max(20); // never shorter than 20 dots (barely readable)
-            let ty = margin_y + bh + text_gap;
-            (bh, ty)
+        // ── barcode height ────────────────────────────────────────────────
+        // Cap at 55 % of printable height so bars don't dominate the label.
+        let max_barcode_h = ((printable_h as f64 * 0.55).round() as u32).max(20);
+        let barcode_h = if has_text {
+            // Also must leave room for the text line.
+            let available = printable_h.saturating_sub(font_h + text_gap);
+            available.min(max_barcode_h).max(20)
         } else {
-            (printable_h, 0) // text_y unused when has_text=false
+            printable_h.min(max_barcode_h).max(20)
         };
+
+        // ── vertical centering ────────────────────────────────────────────
+        // Centre the entire content block (barcode [+ text]) in the printable area.
+        let content_h = barcode_h
+            + if has_text { text_gap + font_h } else { 0 };
+        let v_padding = printable_h.saturating_sub(content_h) / 2;
+        let barcode_y = margin_y + v_padding;
+        let text_y    = barcode_y + barcode_h + text_gap; // 0 when has_text=false
 
         // ── narrow bar width ─────────────────────────────────────────────
         let modules = estimate_modules(barcode_type, data_len);
         let narrow = if modules == 0 {
-            1 // QR — irrelevant, handled via qr_cell
+            1 // QR — handled via qr_cell below
         } else {
-            let n = printable_w / modules;
-            n.max(1).min(3) // clamp 1–3; warn if 0
+            (printable_w / modules).max(1).min(3)
         };
         let wide = (narrow * 2).max(2);
 
+        // ── horizontal centering ──────────────────────────────────────────
+        // Barcode: centre based on estimated rendered symbol width.
+        let estimated_barcode_w = if modules > 0 { modules * narrow } else { 0 };
+        let barcode_x = if estimated_barcode_w > 0 && estimated_barcode_w < printable_w {
+            margin_x + (printable_w - estimated_barcode_w) / 2
+        } else {
+            margin_x
+        };
+
+        // Text: centre based on estimated character width.
+        let text_x = if let Some(t) = text {
+            let tw = estimate_text_width(t, tspl_font);
+            if tw < printable_w {
+                margin_x + (printable_w - tw) / 2
+            } else {
+                margin_x
+            }
+        } else {
+            margin_x
+        };
+
         // ── QR cell size ──────────────────────────────────────────────────
-        // Assume auto-version with ~29 modules per side for short data.
+        // Assume ~29 modules per side for common short data.
         let qr_area = printable_w.min(barcode_h);
         let qr_cell = (qr_area / 29).max(1).min(10);
 
         LabelLayout {
+            total_w,
             printable_w,
             printable_h,
-            barcode_x: margin_x,
-            barcode_y: margin_y,
+            barcode_x,
+            barcode_y,
             barcode_h,
             narrow,
             wide,
             qr_cell,
-            text_x: margin_x,
+            text_x,
             text_y,
             tspl_font,
+            epl_font,
             font_h,
         }
     }
@@ -252,11 +300,11 @@ fn build_tspl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u
     let copies = req.copies.unwrap_or(1);
     let width  = req.label_width_mm.unwrap_or(config.label_width_mm);
     let height = req.label_height_mm.unwrap_or(config.label_height_mm);
-    let has_text = req.label_text.is_some();
 
     let l = LabelLayout::compute(
         width, height, config.dpi,
-        &req.barcode_type, req.barcode_data.len(), has_text,
+        &req.barcode_type, req.barcode_data.len(),
+        req.label_text.as_deref(),
     );
 
     let mut cmds = String::new();
@@ -267,10 +315,9 @@ fn build_tspl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u
     cmds.push_str("DIRECTION 0\r\n");
     cmds.push_str("CLS\r\n");
 
-    // Barcode / QR
+    // Barcode / QR — centred
     match req.barcode_type {
         BarcodeType::Qr => {
-            // QRCODE x, y, ECC, cell_width, mode, rotation, [options], "data"
             cmds.push_str(&format!(
                 "QRCODE {},{},M,{},A,0,M2,S3,\"{}\"\r\n",
                 l.barcode_x, l.barcode_y, l.qr_cell, req.barcode_data
@@ -278,9 +325,7 @@ fn build_tspl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u
         }
         _ => {
             let type_str = tspl_barcode_type(&req.barcode_type);
-            // BARCODE x, y, "type", height, readable, rotation, narrow, wide, "data"
-            // readable=0: we emit our own TEXT command below so text is always
-            // positioned correctly relative to the computed layout.
+            // readable=0 — we emit our own TEXT command for accurate placement.
             cmds.push_str(&format!(
                 "BARCODE {},{},\"{}\",{},0,0,{},{},\"{}\"\r\n",
                 l.barcode_x, l.barcode_y, type_str,
@@ -290,7 +335,7 @@ fn build_tspl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u
         }
     }
 
-    // Optional label text — placed just below the barcode
+    // Optional label text — centred below the barcode
     if let Some(ref text) = req.label_text {
         cmds.push_str(&format!(
             "TEXT {},{},\"{}\",0,1,1,\"{}\"\r\n",
@@ -319,13 +364,26 @@ fn build_test_label_tspl(config: &BarcodePrinterConfig) -> Vec<u8> {
     // Use CODE128 with 12-char data as representative test barcode.
     let l = LabelLayout::compute(
         config.label_width_mm, config.label_height_mm, config.dpi,
-        &BarcodeType::Code128, 12, true,
+        &BarcodeType::Code128, 12,
+        Some("Test Label - OK"),
     );
 
-    // Reserve the top ~20% of the barcode area for a title text line.
-    let title_h = (l.barcode_h / 5).max(12);
+    // Split barcode area: title text on top, barcode below it.
+    let title_h  = (l.barcode_h / 5).max(12);
     let barcode_y2 = l.barcode_y + title_h + 4;
     let barcode_h2 = l.barcode_h.saturating_sub(title_h + 4).max(20);
+
+    // Centre the title text.
+    let title_x = {
+        let tw = estimate_text_width("NEXORA BARCODE TEST", l.tspl_font);
+        if tw < l.printable_w {
+            let margin_x = (mm_to_dots(config.label_width_mm, config.dpi) as f64 * 0.03)
+                .round() as u32;
+            margin_x + (l.printable_w - tw) / 2
+        } else {
+            l.text_x
+        }
+    };
 
     let mut cmds = String::new();
     cmds.push_str(&format!(
@@ -337,7 +395,7 @@ fn build_test_label_tspl(config: &BarcodePrinterConfig) -> Vec<u8> {
     cmds.push_str("CLS\r\n");
     cmds.push_str(&format!(
         "TEXT {},{},\"{}\",0,1,1,\"NEXORA BARCODE TEST\"\r\n",
-        l.text_x, l.barcode_y, l.tspl_font
+        title_x, l.barcode_y, l.tspl_font
     ));
     cmds.push_str(&format!(
         "BARCODE {},{},\"128\",{},0,0,{},{},\"123456789012\"\r\n",
@@ -359,11 +417,11 @@ fn build_zpl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
     let copies  = req.copies.unwrap_or(1);
     let width   = req.label_width_mm.unwrap_or(config.label_width_mm);
     let height  = req.label_height_mm.unwrap_or(config.label_height_mm);
-    let has_text = req.label_text.is_some();
 
     let l = LabelLayout::compute(
         width, height, config.dpi,
-        &req.barcode_type, req.barcode_data.len(), has_text,
+        &req.barcode_type, req.barcode_data.len(),
+        req.label_text.as_deref(),
     );
 
     let mut cmds = String::new();
@@ -371,15 +429,13 @@ fn build_zpl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
 
     match req.barcode_type {
         BarcodeType::Qr => {
-            // ^BQN,model,magnification  (magnification = qr_cell)
             cmds.push_str(&format!(
                 "^FO{},{}^BQN,2,{}^FDMM,A{}^FS\n",
                 l.barcode_x, l.barcode_y, l.qr_cell, req.barcode_data
             ));
         }
         _ => {
-            // ^BY sets bar width; ^BCN sets barcode height; N = no human-readable
-            // (we emit our own ^FO text below for correct placement)
+            // ^BY = bar width, ^BCN = barcode height, N = no printer-rendered HRI text
             cmds.push_str(&format!(
                 "^FO{},{}^BY{}^BCN,{},N,N,N^FD{}^FS\n",
                 l.barcode_x, l.barcode_y,
@@ -389,12 +445,13 @@ fn build_zpl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
         }
     }
 
-    // Optional label text
+    // Optional label text — centred using ^FB (Field Block)
     if let Some(ref text) = req.label_text {
         let fh = l.font_h;
+        // ^FB width, maxLines, lineSpacing, justification('C'=centre), hangingIndent
         cmds.push_str(&format!(
-            "^FO{},{}^A0N,{},{}^FD{}^FS\n",
-            l.text_x, l.text_y, fh, fh, text
+            "^FO0,{}^FB{},1,0,C,0^A0N,{},{}^FD{}^FS\n",
+            l.text_y, l.total_w, fh, fh, text
         ));
     }
 
@@ -406,7 +463,8 @@ fn build_zpl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
 fn build_test_label_zpl(config: &BarcodePrinterConfig) -> Vec<u8> {
     let l = LabelLayout::compute(
         config.label_width_mm, config.label_height_mm, config.dpi,
-        &BarcodeType::Code128, 12, true,
+        &BarcodeType::Code128, 12,
+        Some("Test Label - OK"),
     );
 
     let title_h  = (l.barcode_h / 5).max(12);
@@ -416,17 +474,19 @@ fn build_test_label_zpl(config: &BarcodePrinterConfig) -> Vec<u8> {
 
     let mut cmds = String::new();
     cmds.push_str("^XA\n");
+    // Title — centred with ^FB
     cmds.push_str(&format!(
-        "^FO{},{}^A0N,{},{}^FDNEXORA BARCODE TEST^FS\n",
-        l.text_x, l.barcode_y, fh, fh
+        "^FO0,{}^FB{},1,0,C,0^A0N,{},{}^FDNEXORA BARCODE TEST^FS\n",
+        l.barcode_y, l.total_w, fh, fh
     ));
     cmds.push_str(&format!(
         "^FO{},{}^BY{}^BCN,{},N,N,N^FD123456789012^FS\n",
         l.barcode_x, barcode_y2, l.narrow, barcode_h2
     ));
+    // Footer — centred with ^FB
     cmds.push_str(&format!(
-        "^FO{},{}^A0N,{},{}^FDTest Label - OK^FS\n",
-        l.text_x, l.text_y, fh, fh
+        "^FO0,{}^FB{},1,0,C,0^A0N,{},{}^FDTest Label - OK^FS\n",
+        l.text_y, l.total_w, fh, fh
     ));
     cmds.push_str("^PQ1\n");
     cmds.push_str("^XZ\n");
@@ -441,21 +501,17 @@ fn build_epl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
     let copies  = req.copies.unwrap_or(1);
     let width   = req.label_width_mm.unwrap_or(config.label_width_mm);
     let height  = req.label_height_mm.unwrap_or(config.label_height_mm);
-    let has_text = req.label_text.is_some();
 
     let l = LabelLayout::compute(
         width, height, config.dpi,
-        &req.barcode_type, req.barcode_data.len(), has_text,
+        &req.barcode_type, req.barcode_data.len(),
+        req.label_text.as_deref(),
     );
-
-    // EPL font ID: 1 (small) or 3 (medium) based on label width
-    let epl_font: u32 = if l.tspl_font == "2" { 1 } else { 3 };
 
     let mut cmds = String::new();
     cmds.push_str("N\n");
 
     // B x, y, rotation, type_id, narrow, wide, height, human_readable, "data"
-    // type_id 1 = CODE128, readable=N means no auto-text
     cmds.push_str(&format!(
         "B{},{},0,1,{},{},{},N,\"{}\"\n",
         l.barcode_x, l.barcode_y,
@@ -463,12 +519,11 @@ fn build_epl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
         req.barcode_data
     ));
 
-    // Optional label text
+    // Optional label text — centred
     if let Some(ref text) = req.label_text {
-        // A x, y, rotation, font_id, h_mult, v_mult, reverse, "data"
         cmds.push_str(&format!(
             "A{},{},0,{},1,1,N,\"{}\"\n",
-            l.text_x, l.text_y, epl_font, text
+            l.text_x, l.text_y, l.epl_font, text
         ));
     }
 
@@ -479,19 +534,27 @@ fn build_epl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
 fn build_test_label_epl(config: &BarcodePrinterConfig) -> Vec<u8> {
     let l = LabelLayout::compute(
         config.label_width_mm, config.label_height_mm, config.dpi,
-        &BarcodeType::Code128, 12, true,
+        &BarcodeType::Code128, 12,
+        Some("Test Label - OK"),
     );
 
     let title_h  = (l.barcode_h / 5).max(12);
     let barcode_y2 = l.barcode_y + title_h + 4;
     let barcode_h2 = l.barcode_h.saturating_sub(title_h + 4).max(20);
-    let epl_font: u32 = if l.tspl_font == "2" { 1 } else { 3 };
+
+    // Centre the title text.
+    let title_x = {
+        let tw = estimate_text_width("NEXORA BARCODE TEST", l.tspl_font);
+        let margin_x = (mm_to_dots(config.label_width_mm, config.dpi) as f64 * 0.03)
+            .round() as u32;
+        if tw < l.printable_w { margin_x + (l.printable_w - tw) / 2 } else { l.text_x }
+    };
 
     let mut cmds = String::new();
     cmds.push_str("N\n");
     cmds.push_str(&format!(
         "A{},{},0,{},1,1,N,\"NEXORA BARCODE TEST\"\n",
-        l.text_x, l.barcode_y, epl_font
+        title_x, l.barcode_y, l.epl_font
     ));
     cmds.push_str(&format!(
         "B{},{},0,1,{},{},{},N,\"123456789012\"\n",
@@ -499,7 +562,7 @@ fn build_test_label_epl(config: &BarcodePrinterConfig) -> Vec<u8> {
     ));
     cmds.push_str(&format!(
         "A{},{},0,{},1,1,N,\"Test Label - OK\"\n",
-        l.text_x, l.text_y, epl_font
+        l.text_x, l.text_y, l.epl_font
     ));
     cmds.push_str("P1\n");
     cmds.into_bytes()
@@ -576,14 +639,14 @@ mod tests {
     #[test]
     fn test_layout_32x25_narrow_is_1() {
         // On a 32×25 mm label the bar must narrow to 1 dot to fit CODE128.
-        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, true);
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("test"));
         assert_eq!(l.narrow, 1, "narrow bar must be 1 dot on 32mm label");
         assert_eq!(l.wide, 2);
     }
 
     #[test]
     fn test_layout_32x25_barcode_fits_width() {
-        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, true);
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("test"));
         let modules = estimate_modules(&BarcodeType::Code128, 12);
         let barcode_w = modules * l.narrow;
         assert!(
@@ -595,8 +658,8 @@ mod tests {
 
     #[test]
     fn test_layout_32x25_text_fits_height() {
-        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, true);
-        let total_h = mm_to_dots(25, 203); // 200 dots
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("Cola 330ml"));
+        let total_h = mm_to_dots(25, 203);
         let text_bottom = l.text_y + l.font_h;
         assert!(
             text_bottom <= total_h,
@@ -606,17 +669,51 @@ mod tests {
     }
 
     #[test]
-    fn test_layout_no_text_uses_full_height() {
-        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, false);
-        // Without text the barcode should get the full printable height.
-        let expected = mm_to_dots(25, 203).saturating_sub(2 * 6_u32.max(3));
-        assert_eq!(l.barcode_h, expected.max(20));
+    fn test_layout_no_text_barcode_capped_at_55pct() {
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, None);
+        let printable_h = mm_to_dots(25, 203).saturating_sub(2 * 6_u32.max(3));
+        let max_h = ((printable_h as f64 * 0.55).round() as u32).max(20);
+        assert_eq!(l.barcode_h, max_h,
+            "without text, barcode height should be capped at 55% of printable height");
+    }
+
+    #[test]
+    fn test_layout_content_is_vertically_centred() {
+        // The content block (barcode + text) must be centred in the printable area.
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("test"));
+        let total_h = mm_to_dots(25, 203);
+        let margin_y: u32 = ((total_h as f64 * 0.03).round() as u32).max(3);
+        let printable_h = total_h.saturating_sub(2 * margin_y);
+        let content_h = l.barcode_h + 4 + l.font_h;
+        // Content block starts at barcode_y; check it sits within the printable area.
+        assert!(l.barcode_y >= margin_y, "content must start at or after top margin");
+        assert!(l.text_y + l.font_h <= total_h, "content must end before bottom of label");
+        // Padding above and below should be roughly equal (within 1 dot rounding).
+        let pad_top    = l.barcode_y - margin_y;
+        let pad_bottom = printable_h.saturating_sub(content_h).saturating_sub(pad_top);
+        assert!(pad_top.abs_diff(pad_bottom) <= 1,
+            "vertical padding top ({}) and bottom ({}) must be equal", pad_top, pad_bottom);
+    }
+
+    #[test]
+    fn test_layout_barcode_is_horizontally_centred() {
+        let l = LabelLayout::compute(100, 50, 203, &BarcodeType::Code128, 12, None);
+        let modules = estimate_modules(&BarcodeType::Code128, 12);
+        let barcode_w = modules * l.narrow;
+        let total_w = mm_to_dots(100, 203);
+        let margin_x: u32 = ((total_w as f64 * 0.03).round() as u32).max(3);
+        let printable_w = total_w.saturating_sub(2 * margin_x);
+        // The barcode should be left of centre + half barcode width.
+        let expected_x = margin_x + (printable_w - barcode_w) / 2;
+        assert_eq!(l.barcode_x, expected_x,
+            "barcode must be horizontally centred (expected x={}, got x={})",
+            expected_x, l.barcode_x);
     }
 
     #[test]
     fn test_layout_50x30_wider_narrow() {
         // 50 mm gives more room → narrow should be > 1
-        let l = LabelLayout::compute(50, 30, 203, &BarcodeType::Code128, 12, false);
+        let l = LabelLayout::compute(50, 30, 203, &BarcodeType::Code128, 12, None);
         assert!(l.narrow >= 2, "wider label should allow narrow ≥ 2");
     }
 

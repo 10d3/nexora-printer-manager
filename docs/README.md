@@ -368,7 +368,9 @@ The printer engine automatically fits the barcode to your label — you do not n
 | Calculated value | How it is derived |
 |---|---|
 | Narrow bar width (dots) | `floor(printable_width / symbol_modules)`, clamped 1–3 |
-| Barcode height (dots) | Full printable height, minus text line height when `label_text` is set |
+| Barcode height (dots) | Capped at 55% of printable height so bars don't dominate the label |
+| Horizontal alignment | Barcode and text are both horizontally centered based on their estimated widths |
+| Vertical alignment | The entire content block (barcode + text) is vertically centered on the label |
 | Text Y position (dots) | Barcode bottom + 4-dot gap — never overflows the label |
 | Margins | 3 % of each dimension, minimum 3 dots per side |
 
