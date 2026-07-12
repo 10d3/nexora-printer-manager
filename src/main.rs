@@ -1159,7 +1159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let args: Vec<String> = env::args().collect();
         let minimized = args.contains(&"--minimized".to_string());
 
-        log::info!("Starting Nexora Printer Manager v1.6.6");
+        log::info!("Starting Nexora Printer Manager v1.6.7");
 
         // Setup Auto-launch
         let autostart = autostart::Autostart::new();

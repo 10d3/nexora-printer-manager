@@ -179,9 +179,9 @@ struct FontMetrics {
 }
 
 const FONTS: [FontMetrics; 3] = [
-    FontMetrics { tspl: "3", epl: 4, h: 24, char_w: 14 }, // Large
-    FontMetrics { tspl: "2", epl: 3, h: 20, char_w: 10 }, // Medium
-    FontMetrics { tspl: "1", epl: 1, h: 12, char_w: 8 },  // Small
+    FontMetrics { tspl: "3", epl: 4, h: 24, char_w: 16 }, // Large (TSPL Font 3 is 16x24)
+    FontMetrics { tspl: "2", epl: 3, h: 20, char_w: 12 }, // Medium (TSPL Font 2 is 12x20)
+    FontMetrics { tspl: "1", epl: 1, h: 12, char_w: 8 },  // Small (TSPL Font 1 is 8x12)
 ];
 
 impl LabelLayout {
