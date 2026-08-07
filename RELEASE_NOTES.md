@@ -1,3 +1,11 @@
+## Nexora Printer Manager v1.7.0
+
+### What's New
+
+- **Priced Barcode Labels**: `POST /print-barcode` now accepts an optional `price_text` field. It's rendered as its own explicit row below `label_text`, in a font one size larger than the name (auto-shrinking further only if it doesn't fit the label), across TSPL, ZPL, and EPL.
+
+### Previous Updates
+
 ## Nexora Printer Manager v1.5.0
 
 ### What's New

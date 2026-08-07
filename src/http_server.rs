@@ -142,6 +142,9 @@ pub struct PrintBarcodeRequest {
     pub barcode_data: String,
     pub barcode_type: Option<String>,    // defaults to CODE128
     pub label_text: Option<String>,
+    /// Optional price, printed on its own row below `label_text` in a
+    /// larger font than the rest of the label.
+    pub price_text: Option<String>,
     pub copies: Option<u32>,
     /// Override the configured label width for this job only (mm).
     pub label_width_mm: Option<u32>,
@@ -758,6 +761,7 @@ async fn print_barcode(
         barcode_data: request.barcode_data.clone(),
         barcode_type,
         label_text: request.label_text,
+        price_text: request.price_text,
         copies: request.copies,
         label_width_mm: request.label_width_mm,
         label_height_mm: request.label_height_mm,

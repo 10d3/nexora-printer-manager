@@ -61,6 +61,9 @@ pub struct BarcodeLabelRequest {
     pub barcode_type: BarcodeType,
     /// Optional human-readable text printed below the barcode.
     pub label_text: Option<String>,
+    /// Optional price, printed on its own row below `label_text` in a
+    /// larger font than the rest of the label.
+    pub price_text: Option<String>,
     /// Number of copies to print. Defaults to 1 when `None`.
     pub copies: Option<u32>,
     /// Override the configured label width for this job only (mm).
@@ -135,6 +138,18 @@ struct TextLine {
     y: u32,
 }
 
+/// Price row — laid out separately from `TextLine`s so it always gets its
+/// own explicit line (never merged into the name's wrap group), in its own
+/// (larger) font.
+struct PriceLine {
+    text: String,
+    x: u32,
+    y: u32,
+    tspl_font: &'static str,
+    epl_font: u32,
+    font_h: u32,
+}
+
 /// All dot-unit coordinates needed to lay out a label.
 ///
 /// Computed once from the label's physical dimensions and DPI, then used by
@@ -163,6 +178,8 @@ struct LabelLayout {
     // ── text position ────────────────────────────────────────────────────────
     /// Computed text lines (auto-shrunk and/or wrapped), horizontally centred.
     text_lines: Vec<TextLine>,
+    /// Optional price row — its own line, in its own (larger) font.
+    price_line: Option<PriceLine>,
     /// TSPL font ID ("1", "2" or "3").
     tspl_font: &'static str,
     /// EPL font ID (1, 3 or 4).
@@ -193,6 +210,7 @@ impl LabelLayout {
     /// * `barcode_type`           – determines module count formula
     /// * `data_len`               – number of characters in the barcode value
     /// * `text`                   – optional label text (used for centering)
+    /// * `price_text`             – optional price, rendered as its own larger-font row
     fn compute(
         width_mm: u32,
         height_mm: u32,
@@ -200,6 +218,7 @@ impl LabelLayout {
         barcode_type: &BarcodeType,
         data_len: usize,
         text: Option<&str>,
+        price_text: Option<&str>,
     ) -> Self {
         let total_w = mm_to_dots(width_mm, dpi);
         let total_h = mm_to_dots(height_mm, dpi);
@@ -214,17 +233,19 @@ impl LabelLayout {
         // ── font selection & wrapping ─────────────────────────────────────
         let ideal_font_idx = if printable_w > mm_to_dots(35, dpi) { 0 } else { 1 };
         let mut chosen_font = &FONTS[ideal_font_idx];
+        let mut chosen_font_idx = ideal_font_idx;
         let mut lines_str = Vec::new();
 
         if let Some(t) = text {
             let mut current_idx = ideal_font_idx;
-            
+
             // 1. Auto-shrink: try smaller fonts until it fits on one line.
             while current_idx < FONTS.len() {
                 let f = &FONTS[current_idx];
                 let width = (t.len() as u32) * f.char_w;
                 if width <= printable_w || current_idx == FONTS.len() - 1 {
                     chosen_font = f;
+                    chosen_font_idx = current_idx;
                     break;
                 }
                 current_idx += 1;
@@ -262,22 +283,51 @@ impl LabelLayout {
             }
         }
 
+        // ── price line: explicit, separate row — never merged into the
+        // name's wrap group. Starts one font size larger than the name's
+        // chosen font (capped at the largest available — there's no bigger
+        // size beyond that), then shrinks further only if it still doesn't
+        // fit this label's width.
+        let price_start_idx = if text.is_some() { chosen_font_idx.saturating_sub(1) } else { 0 };
+        let mut price_font_and_text: Option<(&FontMetrics, &str)> = None;
+        if let Some(pt) = price_text {
+            if !pt.is_empty() {
+                let mut idx = price_start_idx;
+                loop {
+                    let f = &FONTS[idx];
+                    let width = (pt.len() as u32) * f.char_w;
+                    if width <= printable_w || idx == FONTS.len() - 1 {
+                        price_font_and_text = Some((f, pt));
+                        break;
+                    }
+                    idx += 1;
+                }
+            }
+        }
+
         let line_gap = 2; // gap between text lines
+        let price_gap: u32 = 4; // gap between the name block and the (larger) price line
+        let has_name_text = !lines_str.is_empty();
+        let has_price_text = price_font_and_text.is_some();
         let total_text_h = if lines_str.is_empty() {
             0
         } else {
             let num_lines = lines_str.len() as u32;
             num_lines * chosen_font.h + (num_lines - 1) * line_gap
         };
+        let total_price_h = price_font_and_text.map(|(f, _)| f.h).unwrap_or(0);
+        let text_block_h = total_text_h
+            + if has_name_text && has_price_text { price_gap } else { 0 }
+            + total_price_h;
 
         let text_gap: u32 = 4; // dots between barcode bottom and text block top
-        let has_text = !lines_str.is_empty();
+        let has_text = has_name_text || has_price_text;
 
         // ── barcode height ────────────────────────────────────────────────
         // Cap at 55 % of printable height so bars don't dominate the label.
         let max_barcode_h = ((printable_h as f64 * 0.55).round() as u32).max(20);
         let barcode_h = if has_text {
-            let available = printable_h.saturating_sub(total_text_h + text_gap);
+            let available = printable_h.saturating_sub(text_block_h + text_gap);
             available.min(max_barcode_h).max(20)
         } else {
             printable_h.min(max_barcode_h).max(20)
@@ -285,7 +335,7 @@ impl LabelLayout {
 
         // ── vertical centering ────────────────────────────────────────────
         // Centre the entire content block (barcode [+ text_block]) in the printable area.
-        let content_h = barcode_h + if has_text { text_gap + total_text_h } else { 0 };
+        let content_h = barcode_h + if has_text { text_gap + text_block_h } else { 0 };
         let v_padding = printable_h.saturating_sub(content_h) / 2;
         let barcode_y = margin_y + v_padding;
 
@@ -308,9 +358,10 @@ impl LabelLayout {
         };
 
         // Text lines: horizontally centre each wrapped line.
+        let text_block_top = barcode_y + barcode_h + text_gap;
         let mut text_lines = Vec::new();
-        let mut current_y = barcode_y + barcode_h + text_gap;
-        
+        let mut current_y = text_block_top;
+
         for line in lines_str {
             let tw = (line.len() as u32) * chosen_font.char_w;
             let x = if tw < printable_w {
@@ -321,6 +372,29 @@ impl LabelLayout {
             text_lines.push(TextLine { text: line, x, y: current_y });
             current_y += chosen_font.h + line_gap;
         }
+
+        // Price line: own row below the name block, in its own (larger) font.
+        let price_line = price_font_and_text.map(|(font, pt)| {
+            let y = if has_name_text {
+                text_block_top + total_text_h + price_gap
+            } else {
+                text_block_top
+            };
+            let tw = (pt.len() as u32) * font.char_w;
+            let x = if tw < printable_w {
+                margin_x + (printable_w - tw) / 2
+            } else {
+                margin_x
+            };
+            PriceLine {
+                text: pt.to_string(),
+                x,
+                y,
+                tspl_font: font.tspl,
+                epl_font: font.epl,
+                font_h: font.h,
+            }
+        });
 
         // ── QR cell size ──────────────────────────────────────────────────
         // Assume ~29 modules per side for common short data.
@@ -338,6 +412,7 @@ impl LabelLayout {
             wide,
             qr_cell,
             text_lines,
+            price_line,
             tspl_font: chosen_font.tspl,
             epl_font: chosen_font.epl,
             font_h: chosen_font.h,
@@ -357,7 +432,7 @@ fn build_tspl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u
     let l = LabelLayout::compute(
         width, height, config.dpi,
         &req.barcode_type, req.barcode_data.len(),
-        req.label_text.as_deref(),
+        req.label_text.as_deref(), req.price_text.as_deref(),
     );
 
     let mut cmds = String::new();
@@ -396,6 +471,14 @@ fn build_tspl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u
         ));
     }
 
+    // Price — own row, own (larger) font
+    if let Some(price) = &l.price_line {
+        cmds.push_str(&format!(
+            "TEXT {},{},\"{}\",0,1,1,\"{}\"\r\n",
+            price.x, price.y, price.tspl_font, price.text
+        ));
+    }
+
     cmds.push_str(&format!("PRINT 1,{}\r\n", copies));
     cmds.into_bytes()
 }
@@ -418,7 +501,7 @@ fn build_test_label_tspl(config: &BarcodePrinterConfig) -> Vec<u8> {
     let l = LabelLayout::compute(
         config.label_width_mm, config.label_height_mm, config.dpi,
         &BarcodeType::Code128, 12,
-        Some("Test Label - OK"),
+        Some("Test Label - OK"), None,
     );
 
     // Split barcode area: title text on top, barcode below it.
@@ -478,7 +561,7 @@ fn build_zpl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
     let l = LabelLayout::compute(
         width, height, config.dpi,
         &req.barcode_type, req.barcode_data.len(),
-        req.label_text.as_deref(),
+        req.label_text.as_deref(), req.price_text.as_deref(),
     );
 
     let mut cmds = String::new();
@@ -511,6 +594,14 @@ fn build_zpl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
         ));
     }
 
+    // Price — own row, own (larger) font
+    if let Some(price) = &l.price_line {
+        cmds.push_str(&format!(
+            "^FO0,{}^FB{},1,0,C,0^A0N,{},{}^FD{}^FS\n",
+            price.y, l.total_w, price.font_h, price.font_h, price.text
+        ));
+    }
+
     cmds.push_str(&format!("^PQ{}\n", copies));
     cmds.push_str("^XZ\n");
     cmds.into_bytes()
@@ -520,7 +611,7 @@ fn build_test_label_zpl(config: &BarcodePrinterConfig) -> Vec<u8> {
     let l = LabelLayout::compute(
         config.label_width_mm, config.label_height_mm, config.dpi,
         &BarcodeType::Code128, 12,
-        Some("Test Label - OK"),
+        Some("Test Label - OK"), None,
     );
 
     let title_h  = (l.barcode_h / 5).max(12);
@@ -563,7 +654,7 @@ fn build_epl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
     let l = LabelLayout::compute(
         width, height, config.dpi,
         &req.barcode_type, req.barcode_data.len(),
-        req.label_text.as_deref(),
+        req.label_text.as_deref(), req.price_text.as_deref(),
     );
 
     let mut cmds = String::new();
@@ -585,6 +676,14 @@ fn build_epl(config: &BarcodePrinterConfig, req: &BarcodeLabelRequest) -> Vec<u8
         ));
     }
 
+    // Price — own row, own (larger) font
+    if let Some(price) = &l.price_line {
+        cmds.push_str(&format!(
+            "A{},{},0,{},1,1,N,\"{}\"\n",
+            price.x, price.y, price.epl_font, price.text
+        ));
+    }
+
     cmds.push_str(&format!("P{}\n", copies));
     cmds.into_bytes()
 }
@@ -593,7 +692,7 @@ fn build_test_label_epl(config: &BarcodePrinterConfig) -> Vec<u8> {
     let l = LabelLayout::compute(
         config.label_width_mm, config.label_height_mm, config.dpi,
         &BarcodeType::Code128, 12,
-        Some("Test Label - OK"),
+        Some("Test Label - OK"), None,
     );
 
     let title_h  = (l.barcode_h / 5).max(12);
@@ -663,6 +762,7 @@ mod tests {
             barcode_data: "123456789012".to_string(),
             barcode_type: BarcodeType::Code128,
             label_text: Some("Test Item".to_string()),
+            price_text: None,
             copies: Some(1),
             label_width_mm: None,
             label_height_mm: None,
@@ -699,14 +799,14 @@ mod tests {
     #[test]
     fn test_layout_32x25_narrow_is_1() {
         // On a 32×25 mm label the bar must narrow to 1 dot to fit CODE128.
-        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("test"));
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("test"), None);
         assert_eq!(l.narrow, 1, "narrow bar must be 1 dot on 32mm label");
         assert_eq!(l.wide, 2);
     }
 
     #[test]
     fn test_layout_32x25_barcode_fits_width() {
-        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("test"));
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("test"), None);
         let modules = estimate_modules(&BarcodeType::Code128, 12);
         let barcode_w = modules * l.narrow;
         assert!(
@@ -718,7 +818,7 @@ mod tests {
 
     #[test]
     fn test_layout_32x25_text_fits_height() {
-        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("Cola 330ml"));
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("Cola 330ml"), None);
         let total_h = mm_to_dots(25, 203);
         let text_bottom = l.text_lines.last().unwrap().y + l.font_h;
         assert!(
@@ -730,7 +830,7 @@ mod tests {
 
     #[test]
     fn test_layout_no_text_barcode_capped_at_55pct() {
-        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, None);
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, None, None);
         let printable_h = mm_to_dots(25, 203).saturating_sub(2 * 6_u32.max(3));
         let max_h = ((printable_h as f64 * 0.55).round() as u32).max(20);
         assert_eq!(l.barcode_h, max_h,
@@ -740,7 +840,7 @@ mod tests {
     #[test]
     fn test_layout_content_is_vertically_centred() {
         // The content block (barcode + text) must be centred in the printable area.
-        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("test"));
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("test"), None);
         let total_h = mm_to_dots(25, 203);
         let margin_y: u32 = ((total_h as f64 * 0.03).round() as u32).max(3);
         let printable_h = total_h.saturating_sub(2 * margin_y);
@@ -757,7 +857,7 @@ mod tests {
 
     #[test]
     fn test_layout_barcode_is_horizontally_centred() {
-        let l = LabelLayout::compute(100, 50, 203, &BarcodeType::Code128, 12, None);
+        let l = LabelLayout::compute(100, 50, 203, &BarcodeType::Code128, 12, None, None);
         let modules = estimate_modules(&BarcodeType::Code128, 12);
         let barcode_w = modules * l.narrow;
         let total_w = mm_to_dots(100, 203);
@@ -773,8 +873,43 @@ mod tests {
     #[test]
     fn test_layout_50x30_wider_narrow() {
         // 50 mm gives more room → narrow should be > 1
-        let l = LabelLayout::compute(50, 30, 203, &BarcodeType::Code128, 12, None);
+        let l = LabelLayout::compute(50, 30, 203, &BarcodeType::Code128, 12, None, None);
         assert!(l.narrow >= 2, "wider label should allow narrow ≥ 2");
+    }
+
+    // ── price line ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_layout_price_line_uses_larger_font_than_name() {
+        // On a 32mm label the name lands on the Medium font — the price
+        // should step up to Large, strictly bigger than the name.
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("Test Item"), Some("$12.99"));
+        let price = l.price_line.expect("price_line must be Some when price_text is given");
+        assert!(price.font_h > l.font_h,
+            "price font height ({}) must be greater than name font height ({})", price.font_h, l.font_h);
+    }
+
+    #[test]
+    fn test_layout_price_line_is_separate_row_below_name() {
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("Test Item"), Some("$12.99"));
+        let price = l.price_line.expect("price_line must be Some");
+        let last_name_line = l.text_lines.last().expect("name text_lines must be non-empty");
+        assert!(price.y >= last_name_line.y + l.font_h,
+            "price line (y={}) must start at or after the bottom of the name block (y={} + h={})",
+            price.y, last_name_line.y, l.font_h);
+    }
+
+    #[test]
+    fn test_layout_price_line_without_name_still_renders() {
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, None, Some("$12.99"));
+        assert!(l.text_lines.is_empty(), "no name text was given");
+        assert!(l.price_line.is_some(), "price_line must still render without a name");
+    }
+
+    #[test]
+    fn test_layout_no_price_text_omits_price_line() {
+        let l = LabelLayout::compute(32, 25, 203, &BarcodeType::Code128, 12, Some("Test Item"), None);
+        assert!(l.price_line.is_none());
     }
 
     // ── BarcodeType::from_str ─────────────────────────────────────────────────
@@ -909,6 +1044,26 @@ mod tests {
         // narrow=1 must appear in the BARCODE command
         assert!(output.contains(",1,2,\"123456789012\""),
             "Expected narrow=1 wide=2, got: {}", output);
+    }
+
+    #[test]
+    fn test_build_tspl_price_text_emits_second_text_command_in_larger_font() {
+        let config = small_config("TSPL");
+        let req = BarcodeLabelRequest {
+            price_text: Some("$12.99".to_string()),
+            ..test_request()
+        };
+        let output = String::from_utf8(build_label(&config, &req)).unwrap();
+        let text_commands: Vec<&str> = output.lines().filter(|l| l.starts_with("TEXT ")).collect();
+        assert_eq!(text_commands.len(), 2,
+            "expected one TEXT command for the name and one for the price, got: {:#?}", text_commands);
+        assert!(text_commands[0].contains("\"Test Item\""));
+        assert!(text_commands[1].contains("\"$12.99\""));
+        // Font id is the 3rd field: TEXT x,y,"font",...
+        let name_font = text_commands[0].split(',').nth(2).unwrap();
+        let price_font = text_commands[1].split(',').nth(2).unwrap();
+        assert_ne!(name_font, price_font,
+            "price line must use a different (larger) font id than the name line");
     }
 
     // ── ZPL builder ───────────────────────────────────────────────────────────
