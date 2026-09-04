@@ -446,11 +446,13 @@ pub struct ReceiptItem {
     #[serde(default)]
     pub quantity: u32,
     #[serde(default)]
-    pub price: f64,
+    pub price: serde_json::Value,
     #[serde(default)]
-    pub total: f64,
+    pub total: serde_json::Value,
     #[serde(default)]
     pub modifiers: Option<Vec<String>>,
+    #[serde(flatten)]
+    pub custom: HashMap<String, serde_json::Value>,
 }
 
 impl Default for ReceiptItem {
@@ -458,9 +460,10 @@ impl Default for ReceiptItem {
         Self {
             name: String::new(),
             quantity: 1,
-            price: 0.0,
-            total: 0.0,
+            price: serde_json::Value::Number(0.into()),
+            total: serde_json::Value::Number(0.into()),
             modifiers: None,
+            custom: HashMap::new(),
         }
     }
 }
@@ -1392,11 +1395,47 @@ impl TemplateRenderer {
         let mut map = HashMap::new();
         map.insert("name".to_string(), item.name.clone());
         map.insert("quantity".to_string(), item.quantity.to_string());
-        map.insert("price".to_string(), format!("{:.2}", item.price));
-        map.insert("total".to_string(), format!("{:.2}", item.total));
+        
+        let price_str = match &item.price {
+            serde_json::Value::Number(n) => {
+                if let Some(f) = n.as_f64() {
+                    format!("{:.2}", f)
+                } else {
+                    n.to_string()
+                }
+            },
+            serde_json::Value::String(s) => s.clone(),
+            v => v.to_string()
+        };
+        map.insert("price".to_string(), price_str);
+        
+        let total_str = match &item.total {
+            serde_json::Value::Number(n) => {
+                if let Some(f) = n.as_f64() {
+                    format!("{:.2}", f)
+                } else {
+                    n.to_string()
+                }
+            },
+            serde_json::Value::String(s) => s.clone(),
+            v => v.to_string()
+        };
+        map.insert("total".to_string(), total_str);
+
         if let Some(modifiers) = &item.modifiers {
             map.insert("modifiers".to_string(), modifiers.join(","));
         }
+        
+        for (k, v) in &item.custom {
+             let str_value = match v {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                _ => v.to_string(),
+             };
+             map.insert(k.clone(), str_value);
+        }
+        
         map
     }
 

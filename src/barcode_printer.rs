@@ -305,10 +305,14 @@ impl LabelLayout {
             }
         }
 
-        let line_gap = 2; // gap between text lines
-        let price_gap: u32 = 4; // gap between the name block and the (larger) price line
+        let line_gap = 2; // gap between wrapped text lines
+        let name_gap: u32 = 4; // gap between Name (top) and Barcode (middle)
+        let price_gap: u32 = 4; // gap between Barcode and Price (bottom)
+        
         let has_name_text = !lines_str.is_empty();
         let has_price_text = price_font_and_text.is_some();
+        let has_text = has_name_text || has_price_text;
+
         let total_text_h = if lines_str.is_empty() {
             0
         } else {
@@ -316,28 +320,26 @@ impl LabelLayout {
             num_lines * chosen_font.h + (num_lines - 1) * line_gap
         };
         let total_price_h = price_font_and_text.map(|(f, _)| f.h).unwrap_or(0);
-        let text_block_h = total_text_h
-            + if has_name_text && has_price_text { price_gap } else { 0 }
-            + total_price_h;
 
-        let text_gap: u32 = 4; // dots between barcode bottom and text block top
-        let has_text = has_name_text || has_price_text;
+        let fixed_elements_h = 
+            (if has_name_text { total_text_h + name_gap } else { 0 }) +
+            (if has_price_text { price_gap + total_price_h } else { 0 });
 
         // ── barcode height ────────────────────────────────────────────────
         // Cap at 55 % of printable height so bars don't dominate the label.
         let max_barcode_h = ((printable_h as f64 * 0.55).round() as u32).max(20);
         let barcode_h = if has_text {
-            let available = printable_h.saturating_sub(text_block_h + text_gap);
-            available.min(max_barcode_h).max(20)
+            printable_h.saturating_sub(fixed_elements_h).min(max_barcode_h).max(20)
         } else {
             printable_h.min(max_barcode_h).max(20)
         };
 
         // ── vertical centering ────────────────────────────────────────────
-        // Centre the entire content block (barcode [+ text_block]) in the printable area.
-        let content_h = barcode_h + if has_text { text_gap + text_block_h } else { 0 };
+        // Centre the entire content block in the printable area.
+        let content_h = barcode_h + fixed_elements_h;
         let v_padding = printable_h.saturating_sub(content_h) / 2;
-        let barcode_y = margin_y + v_padding;
+        
+        let mut current_y = margin_y + v_padding;
 
         // ── narrow bar width ─────────────────────────────────────────────
         let modules = estimate_modules(barcode_type, data_len);
@@ -357,28 +359,33 @@ impl LabelLayout {
             margin_x
         };
 
-        // Text lines: horizontally centre each wrapped line.
-        let text_block_top = barcode_y + barcode_h + text_gap;
+        // 1. Text lines (Product Name at TOP)
         let mut text_lines = Vec::new();
-        let mut current_y = text_block_top;
-
-        for line in lines_str {
-            let tw = (line.len() as u32) * chosen_font.char_w;
-            let x = if tw < printable_w {
-                margin_x + (printable_w - tw) / 2
-            } else {
-                margin_x
-            };
-            text_lines.push(TextLine { text: line, x, y: current_y });
-            current_y += chosen_font.h + line_gap;
+        if has_name_text {
+            for line in lines_str {
+                let tw = (line.len() as u32) * chosen_font.char_w;
+                let x = if tw < printable_w {
+                    margin_x + (printable_w - tw) / 2
+                } else {
+                    margin_x
+                };
+                text_lines.push(TextLine { text: line, x, y: current_y });
+                current_y += chosen_font.h + line_gap;
+            }
+            current_y -= line_gap; // remove last line gap
+            current_y += name_gap;
         }
 
-        // Price line: own row below the name block, in its own (larger) font.
+        // 2. Barcode (MIDDLE)
+        let barcode_y = current_y;
+        current_y += barcode_h;
+
+        // 3. Price line (BOTTOM)
         let price_line = price_font_and_text.map(|(font, pt)| {
-            let y = if has_name_text {
-                text_block_top + total_text_h + price_gap
+            let y = if has_name_text || barcode_h > 0 {
+                current_y + price_gap
             } else {
-                text_block_top
+                current_y
             };
             let tw = (pt.len() as u32) * font.char_w;
             let x = if tw < printable_w {
