@@ -596,9 +596,10 @@ impl PrinterManager {
                 .map(|item| ReceiptItem {
                     name: item.name.clone(),
                     quantity: item.quantity,
-                    price: item.price,
-                    total: item.quantity as f64 * item.price,
+                    price: serde_json::json!(item.price),
+                    total: serde_json::json!(item.quantity as f64 * item.price),
                     modifiers: None,
+                    custom: std::collections::HashMap::new(),
                 })
                 .collect(),
             subtotal: receipt.subtotal,
