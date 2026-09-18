@@ -816,7 +816,7 @@ pub async fn start_server(
 
     // Configure CORS for web app integration
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(tower_http::cors::AllowOrigin::mirror_request())
         .allow_methods(Any)
         .allow_headers(Any)
         .allow_private_network(true);
