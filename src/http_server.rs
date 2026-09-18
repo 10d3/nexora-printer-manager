@@ -818,7 +818,8 @@ pub async fn start_server(
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_headers(Any)
+        .allow_private_network(true);
 
     // Build router with all routes
     let app = Router::new()
