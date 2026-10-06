@@ -337,16 +337,19 @@ impl PrinterManager {
                     };
                     bytes.extend_from_slice(&[0x1B, 0x61, n]);
                 }
-                template_render::PrintCommand::QRCode { content, size: _ } => {
-                    // Simplified QR code (requires actual implementation for different printers)
-                    log::warn!("QR Code not fully implemented in raw bytes");
-                    bytes.extend_from_slice(format!("[QR: {}]", content).as_bytes());
-                    bytes.push(b'\n');
+                template_render::PrintCommand::QRCode { content, size } => {
+                    bytes.extend_from_slice(&encode_qr(&content, size));
                 }
-                template_render::PrintCommand::Barcode { content, .. } => {
-                    log::warn!("Barcode not fully implemented in raw bytes");
-                    bytes.extend_from_slice(format!("[Barcode: {}]", content).as_bytes());
-                    bytes.push(b'\n');
+                template_render::PrintCommand::Barcode {
+                    content,
+                    format,
+                    height,
+                    width,
+                    show_text,
+                } => {
+                    bytes.extend_from_slice(&encode_barcode(
+                        &content, &format, height, width, show_text,
+                    ));
                 }
                 template_render::PrintCommand::Image(img_bytes) => {
                     bytes.extend_from_slice(&img_bytes);
@@ -1160,7 +1163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let args: Vec<String> = env::args().collect();
         let minimized = args.contains(&"--minimized".to_string());
 
-        log::info!("Starting Nexora Printer Manager v1.6.7");
+        log::info!("Starting Nexora Printer Manager v{}", env!("CARGO_PKG_VERSION"));
 
         // Setup Auto-launch
         let autostart = autostart::Autostart::new();
@@ -1574,4 +1577,122 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Build a real ESC/POS QR symbol (GS ( k, model 2) as raw bytes.
+fn encode_qr(content: &str, module_size: u8) -> Vec<u8> {
+    let module = if module_size == 0 {
+        6
+    } else {
+        module_size.clamp(1, 16)
+    };
+    let mut out = Vec::new();
+
+    // Select QR model 2
+    out.extend_from_slice(&[0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00]);
+    // Module size in dots
+    out.extend_from_slice(&[0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, module]);
+    // Error correction level M
+    out.extend_from_slice(&[0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x31]);
+
+    // Store symbol data: pL pH cn fn m + payload.
+    // ponytail: single chunk; QR payload max is ~2953 bytes so a printer buffer
+    // overflow is not reachable with receipt-sized content. Chunk if it ever is.
+    let data = content.as_bytes();
+    let store_len = data.len() + 3;
+    out.extend_from_slice(&[
+        0x1D,
+        0x28,
+        0x6B,
+        (store_len & 0xFF) as u8,
+        ((store_len >> 8) & 0xFF) as u8,
+        0x31,
+        0x50,
+        0x30,
+    ]);
+    out.extend_from_slice(data);
+    // Print stored symbol
+    out.extend_from_slice(&[0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30]);
+    out.push(b'\n');
+    out
+}
+
+/// Build a real ESC/POS barcode (GS k) as raw bytes. `format` follows the
+/// template Barcode element: CODE128 (default), CODE39, EAN13, EAN8, UPCA.
+fn encode_barcode(content: &str, format: &str, height: u8, width: u8, show_text: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+
+    // HRI text position: 0 = none, 2 = below the barcode
+    out.extend_from_slice(&[0x1D, 0x48, if show_text { 2 } else { 0 }]);
+    if height > 0 {
+        out.extend_from_slice(&[0x1D, 0x68, height]);
+    }
+    if width > 0 {
+        out.extend_from_slice(&[0x1D, 0x77, width.clamp(2, 6)]);
+    }
+
+    let digits: String = content.chars().filter(|c| c.is_ascii_digit()).collect();
+
+    match format.to_uppercase().as_str() {
+        "EAN13" | "EAN-13" if digits.len() >= 12 => {
+            out.extend_from_slice(&[0x1D, 0x6B, 0x02]);
+            out.extend_from_slice(&digits.as_bytes()[..12]);
+        }
+        "EAN8" | "EAN-8" if digits.len() >= 7 => {
+            out.extend_from_slice(&[0x1D, 0x6B, 0x03]);
+            out.extend_from_slice(&digits.as_bytes()[..7]);
+        }
+        "UPCA" | "UPC-A" if digits.len() >= 11 => {
+            out.extend_from_slice(&[0x1D, 0x6B, 0x00]);
+            out.extend_from_slice(&digits.as_bytes()[..11]);
+        }
+        "CODE39" | "39" => {
+            let data = content.to_uppercase();
+            let data = &data.as_bytes()[..data.len().min(253)];
+            out.extend_from_slice(&[0x1D, 0x6B, 0x45, data.len() as u8]);
+            out.extend_from_slice(data);
+        }
+        _ => {
+            let data = &content.as_bytes()[..content.len().min(253)];
+            out.extend_from_slice(&[0x1D, 0x6B, 0x49, (data.len() + 2) as u8, 0x7B, 0x42]);
+            out.extend_from_slice(data);
+        }
+    }
+
+    out.push(b'\n');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn qr_emits_real_escpos_not_placeholder() {
+        let bytes = encode_qr("https://example.com", 6);
+        assert!(bytes.starts_with(&[0x1D, 0x28, 0x6B]));
+        assert!(contains(&bytes, &[0x31, 0x51, 0x30]));
+        assert!(!String::from_utf8_lossy(&bytes).contains("[QR:"));
+    }
+
+    #[test]
+    fn code128_barcode_emits_real_escpos_not_placeholder() {
+        let bytes = encode_barcode("ABC123", "CODE128", 80, 2, true);
+        assert!(contains(&bytes, &[0x1D, 0x6B, 0x49, 8]));
+        assert!(!String::from_utf8_lossy(&bytes).contains("[Barcode:"));
+    }
+
+    #[test]
+    fn ean13_uses_fixed_length_command() {
+        let bytes = encode_barcode("5901234123457", "EAN13", 80, 2, true);
+        let pos = bytes
+            .windows(3)
+            .position(|w| w == [0x1D, 0x6B, 0x02])
+            .expect("EAN13 command missing");
+        assert_eq!(&bytes[pos + 3..pos + 15], b"590123412345");
+    }
 }

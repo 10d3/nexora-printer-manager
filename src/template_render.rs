@@ -1541,6 +1541,34 @@ impl TemplateRenderer {
 
     /// Simple condition evaluator
     fn evaluate_condition(&self, condition: &str, data: &ReceiptData) -> bool {
+        // Array-length conditions (e.g. "items.length > 0") must be resolved
+        // BEFORE the generic comparison operators below. Otherwise "x.length > N"
+        // is parsed as a numeric compare against the literal variable name
+        // "x.length", which resolves to an empty string and silently falls
+        // through to `true`.
+        if condition.contains(".length") {
+            for op in [">=", "<=", "!=", "==", ">", "<"] {
+                if let Some((lhs, rhs)) = condition.split_once(op) {
+                    let array_name = lhs.trim().trim_end_matches(".length").trim();
+                    let len = self.get_data_source_items(array_name, data).len() as i64;
+                    let threshold = match rhs.trim().parse::<i64>() {
+                        Ok(t) => t,
+                        Err(_) => return true,
+                    };
+                    return match op {
+                        ">=" => len >= threshold,
+                        "<=" => len <= threshold,
+                        "!=" => len != threshold,
+                        "==" => len == threshold,
+                        ">" => len > threshold,
+                        "<" => len < threshold,
+                        _ => true,
+                    };
+                }
+            }
+            return true;
+        }
+
         // Handle comparison operators
         if condition.contains(">") {
             let parts: Vec<&str> = condition.split(">").map(|s| s.trim()).collect();
@@ -1573,16 +1601,6 @@ impl TemplateRenderer {
                     return var_value == "false" || var_value == "0" || var_value.is_empty();
                 }
                 return var_value == compare_value;
-            }
-        } else if condition.contains(".length") {
-            // Handle array length conditions like "items.length > 0"
-            let parts: Vec<&str> = condition.split(">").map(|s| s.trim()).collect();
-            if parts.len() == 2 {
-                let array_name = parts[0].trim_end_matches(".length");
-                let items = self.get_data_source_items(array_name, data);
-                if let Ok(threshold) = parts[1].parse::<usize>() {
-                    return items.len() > threshold;
-                }
             }
         }
 
@@ -1707,6 +1725,39 @@ mod tests {
 
         assert!(renderer.evaluate_condition("discount > 0", &data));
         assert!(!renderer.evaluate_condition("discount > 100", &data));
+    }
+
+    #[test]
+    fn test_array_length_condition() {
+        let renderer = TemplateRenderer::new(48);
+        let empty = ReceiptData {
+            order_id: "1".to_string(),
+            timestamp: "2024-01-15".to_string(),
+            payment_method: "CASH".to_string(),
+            ..Default::default()
+        };
+
+        assert!(!renderer.evaluate_condition("items.length > 0", &empty));
+        assert!(renderer.evaluate_condition("items.length == 0", &empty));
+        assert!(renderer.evaluate_condition("items.length <= 0", &empty));
+
+        let with_item = ReceiptData {
+            order_id: "1".to_string(),
+            timestamp: "2024-01-15".to_string(),
+            payment_method: "CASH".to_string(),
+            items: vec![ReceiptItem {
+                name: "Widget".to_string(),
+                quantity: 1,
+                price: serde_json::json!(5.0),
+                total: serde_json::json!(5.0),
+                modifiers: None,
+                custom: std::collections::HashMap::new(),
+            }],
+            ..Default::default()
+        };
+
+        assert!(renderer.evaluate_condition("items.length > 0", &with_item));
+        assert!(!renderer.evaluate_condition("items.length == 0", &with_item));
     }
 
     #[test]

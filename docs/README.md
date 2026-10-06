@@ -125,7 +125,7 @@ Content-Type: application/json
     "id": "receipt-v1",
     "name": "Standard Receipt",
     "version": "1.0",
-    "paper_width": 80,
+    "paper_width": 48,
     "layout": {
       "sections": [
         {
@@ -152,6 +152,8 @@ Content-Type: application/json
   "message": "Template 'receipt-v1' set successfully"
 }
 ```
+
+> `paper_width` is in **characters**, not millimeters: use `48` for 80 mm paper and `32` for 58 mm paper. If omitted, it defaults to `48`.
 
 ---
 
@@ -255,6 +257,92 @@ DELETE /cache
   "message": "Cache cleared"
 }
 ```
+
+---
+
+### Print Image
+
+Renders a PNG or JPEG image to the receipt printer as an ESC/POS raster. Use this for bitmap content the template element system cannot express. The image is scaled to the paper width and dithered to 1-bit monochrome.
+
+```http
+POST /print-image
+```
+
+**Request:**
+```json
+{
+  "image": "data:image/png;base64,iVBORw0KGgo...",
+  "paper_width_dots": 576
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `image` | Yes | Base64 image, with or without a `data:image/...;base64,` prefix |
+| `paper_width_dots` | No | Printable width in dots. Defaults to `576` (80 mm); use `384` for 58 mm |
+
+**Response:**
+```json
+{ "success": true, "message": "Image printed successfully" }
+```
+
+---
+
+### Preview Image
+
+Converts the same image and returns the planned raster commands plus an ASCII-art preview, without touching the printer.
+
+```http
+POST /preview-image
+```
+
+**Request:** same body as `/print-image`.
+
+**Response:**
+```json
+{
+  "success": true,
+  "commands": ["Result: Resized to 576x240 dots (1-bit Monochrome)", "..."],
+  "text_preview": "................"
+}
+```
+
+---
+
+### Print Raw ESC/POS
+
+Sends raw bytes straight to the printer. This is the escape hatch for any command the template system does not model (cut, cash-drawer kick, buzzer, custom formatting). **Bytes are not validated or escaped** — send correct ESC/POS for your printer.
+
+```http
+POST /print-raw
+```
+
+**Request:**
+```json
+{ "base64": "G0AdVgE=" }
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `base64` | Yes | Standard base64 of the exact bytes to write |
+
+**Response:**
+```json
+{ "success": true, "message": "Raw ESC/POS sent (5 bytes)" }
+```
+
+**Example:**
+```javascript
+// ESC/POS: init (1B 40) + partial cut (1D 56 01)
+const bytes = new Uint8Array([0x1B, 0x40, 0x1D, 0x56, 0x01]);
+await fetch('http://localhost:8080/print-raw', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ base64: btoa(String.fromCharCode(...bytes)) })
+});
+```
+
+> **Security:** `/print-raw` can drive hardware (cash drawer, buzzer). It is protected by the Origin guard described in [Security](#security) below.
 
 ---
 
@@ -428,6 +516,27 @@ for (const label of labels) {
     body: JSON.stringify({ barcode_type: 'CODE128', ...label })
   });
 }
+```
+
+---
+
+## Security
+
+The HTTP server binds to **`127.0.0.1:8080` only** and is intended for the local machine that runs the POS. It has **no authentication and no TLS** — do not expose it on a LAN or the internet.
+
+### Origin guard
+
+Because CORS only hides a response (it does not stop the side effect of a request), the server rejects any request that carries an `Origin` header it does not recognize:
+
+- **Localhost is always allowed**: `http://localhost`, `http://127.0.0.1`, `http://[::1]` and any port.
+- **Other origins** are allowed only if listed in the `NEXORA_ALLOWED_ORIGINS` environment variable (comma-separated).
+- Requests with **no** `Origin` header (curl, scripts, other local tools) are unaffected.
+
+Blocked requests get `403 Forbidden` (`"Origin not allowed"`) and are logged as `Blocked request from disallowed origin: ...`. This stops a malicious webpage open in the POS browser from reaching `/print-raw` or spamming prints.
+
+**Example** — allow a hosted frontend in addition to localhost:
+```bash
+NEXORA_ALLOWED_ORIGINS=https://pos.example.com,https://app.nexora.com nexora-printer-manager
 ```
 
 ---

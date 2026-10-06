@@ -2,8 +2,10 @@
 // HTTP server for integration with Nexora POS web app using Axum
 
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
+    extract::{Path, Query, Request, State},
+    http::{header, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
@@ -90,6 +92,12 @@ pub struct PrintImageRequest {
     pub paper_width_dots: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PrintRawRequest {
+    /// Base64-encoded raw ESC/POS bytes, sent verbatim to the printer.
+    pub base64: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PreviewResponse {
     pub success: bool,
@@ -166,6 +174,7 @@ pub struct BarcodeStatusResponse {
 pub struct AppState {
     pub printer_manager: Arc<Mutex<PrinterManager>>,
     pub barcode_manager: Arc<Mutex<BarcodePrinterManager>>,
+    pub allowed_origins: Vec<String>,
 }
 
 // ==================== Route Handlers ====================
@@ -600,82 +609,121 @@ async fn delete_logo(
 }
 
 /// Print a base64-encoded image (PNG/JPEG), scaled to fit paper width.
-// async fn print_image(
-//     State(state): State<Arc<AppState>>,
-//     Json(request): Json<PrintImageRequest>,
-// ) -> Result<Json<ApiResponse>, StatusCode> {
-//     let mut manager = state.printer_manager.lock().unwrap();
+async fn print_image(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<PrintImageRequest>,
+) -> Result<Json<ApiResponse>, StatusCode> {
+    let mut manager = state.printer_manager.lock().unwrap();
 
-//     if !manager.is_connected() {
-//         return Ok(Json(ApiResponse {
-//             success: false,
-//             message: "Printer not connected".to_string(),
-//         }));
-//     }
+    if !manager.is_connected() {
+        return Ok(Json(ApiResponse {
+            success: false,
+            message: "Printer not connected".to_string(),
+        }));
+    }
 
-//     let paper_width = request.paper_width_dots.unwrap_or(576);
+    let paper_width = request.paper_width_dots.unwrap_or(576);
 
-//     let escpos_bytes = match crate::image_print::image_to_escpos(&request.image, paper_width) {
-//         Ok(bytes) => bytes,
-//         Err(e) => {
-//             log::error!("Image conversion failed: {}", e);
-//             return Ok(Json(ApiResponse {
-//                 success: false,
-//                 message: format!("Image conversion failed: {}", e),
-//             }));
-//         }
-//     };
+    let escpos_bytes =
+        match crate::image_print::image_to_escpos(&request.image, paper_width, None, "center") {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                log::error!("Image conversion failed: {}", e);
+                return Ok(Json(ApiResponse {
+                    success: false,
+                    message: format!("Image conversion failed: {}", e),
+                }));
+            }
+        };
 
-//     match manager.print_raw(&escpos_bytes) {
-//         Ok(_) => Ok(Json(ApiResponse {
-//             success: true,
-//             message: "Image printed successfully".to_string(),
-//         })),
-//         Err(e) => {
-//             log::error!("Image print failed: {}", e);
-//             Ok(Json(ApiResponse {
-//                 success: false,
-//                 message: format!("Image print failed: {}", e),
-//             }))
-//         }
-//     }
-// }
+    match manager.print_raw(&escpos_bytes) {
+        Ok(_) => Ok(Json(ApiResponse {
+            success: true,
+            message: "Image printed successfully".to_string(),
+        })),
+        Err(e) => {
+            log::error!("Image print failed: {}", e);
+            Ok(Json(ApiResponse {
+                success: false,
+                message: format!("Image print failed: {}", e),
+            }))
+        }
+    }
+}
 
-// pub async fn preview_image(
-//     Json(request): Json<PrintImageRequest>,
-// ) -> Result<Json<PreviewResponse>, StatusCode> {
-//     let paper_width = request.paper_width_dots.unwrap_or(576);
+/// Send raw base64-encoded ESC/POS bytes straight to the printer.
+async fn print_raw(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<PrintRawRequest>,
+) -> Result<Json<ApiResponse>, StatusCode> {
+    use base64::{engine::general_purpose, Engine as _};
 
-//     // Call our new helper function to generate the ASCII preview and metadata
-//     match crate::image_print::generate_image_preview(&request.image, paper_width) {
-//         Ok((ascii_art, target_w, target_h, estimated_bytes)) => {
-            
-//             // Build pseudo-commands to explain what the printer will do
-//             let commands = vec![
-//                 format!("Action: Process Base64 Image"),
-//                 format!("Result: Resized to {}x{} dots (1-bit Monochrome)", target_w, target_h),
-//                 format!("Command: [1D 76 30 ...] GS v 0 (Print Raster Bit Image)"),
-//                 format!("Payload Size: {} bytes", estimated_bytes),
-//                 format!("Command: [1B 64 03] ESC d 3 (Feed 3 lines)"),
-//                 format!("Command: [1D 56 42 00] GS V 66 0 (Partial Cut)"),
-//             ];
+    let mut manager = state.printer_manager.lock().unwrap();
 
-//             Ok(Json(PreviewResponse {
-//                 success: true,
-//                 commands,
-//                 text_preview: ascii_art,
-//             }))
-//         }
-//         Err(e) => {
-//             log::error!("Image preview failed: {}", e);
-//             Ok(Json(PreviewResponse {
-//                 success: false,
-//                 commands: vec![],
-//                 text_preview: format!("Error generating image preview: {}", e),
-//             }))
-//         }
-//     }
-// }
+    if !manager.is_connected() {
+        return Ok(Json(ApiResponse {
+            success: false,
+            message: "Printer not connected".to_string(),
+        }));
+    }
+
+    let bytes = match general_purpose::STANDARD.decode(request.base64.trim()) {
+        Ok(b) => b,
+        Err(e) => {
+            return Ok(Json(ApiResponse {
+                success: false,
+                message: format!("Invalid base64 payload: {}", e),
+            }));
+        }
+    };
+
+    match manager.print_raw(&bytes) {
+        Ok(_) => Ok(Json(ApiResponse {
+            success: true,
+            message: format!("Raw ESC/POS sent ({} bytes)", bytes.len()),
+        })),
+        Err(e) => Ok(Json(ApiResponse {
+            success: false,
+            message: format!("Raw print failed: {}", e),
+        })),
+    }
+}
+
+pub async fn preview_image(
+    Json(request): Json<PrintImageRequest>,
+) -> Result<Json<PreviewResponse>, StatusCode> {
+    let paper_width = request.paper_width_dots.unwrap_or(576);
+
+    match crate::image_print::generate_image_preview(&request.image, paper_width, None, "center") {
+        Ok((ascii_art, target_w, target_h, estimated_bytes)) => {
+            let commands = vec![
+                "Action: Process Base64 Image".to_string(),
+                format!(
+                    "Result: Resized to {}x{} dots (1-bit Monochrome)",
+                    target_w, target_h
+                ),
+                "Command: [1D 76 30 ...] GS v 0 (Print Raster Bit Image)".to_string(),
+                format!("Payload Size: {} bytes", estimated_bytes),
+                "Command: [1B 64 03] ESC d 3 (Feed 3 lines)".to_string(),
+                "Command: [1D 56 42 00] GS V 66 0 (Partial Cut)".to_string(),
+            ];
+
+            Ok(Json(PreviewResponse {
+                success: true,
+                commands,
+                text_preview: ascii_art,
+            }))
+        }
+        Err(e) => {
+            log::error!("Image preview failed: {}", e);
+            Ok(Json(PreviewResponse {
+                success: false,
+                commands: vec![],
+                text_preview: format!("Error generating image preview: {}", e),
+            }))
+        }
+    }
+}
 
 // ==================== Barcode Printer Handlers ====================
 
@@ -804,6 +852,39 @@ async fn barcode_test_print(
     }
 }
 
+// ==================== Origin Guard ====================
+
+/// The server binds to loopback, but any page loaded in the machine's browser
+/// can still reach 127.0.0.1. A forbidden origin must be rejected here: CORS
+/// only hides the response, it does not stop the print from happening.
+fn is_local_origin(origin: &str) -> bool {
+    let authority = origin.split("://").nth(1).unwrap_or(origin);
+    let host = authority.split('/').next().unwrap_or(authority);
+    let host = match host.rsplit_once(':') {
+        Some((h, port)) if port.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => host,
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+}
+
+fn origin_allowed(origin: &str, allowed: &[String]) -> bool {
+    is_local_origin(origin) || allowed.iter().any(|a| a.eq_ignore_ascii_case(origin))
+}
+
+async fn origin_guard(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(origin) = request.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        if !origin_allowed(origin, &state.allowed_origins) {
+            log::warn!("Blocked request from disallowed origin: {}", origin);
+            return (StatusCode::FORBIDDEN, "Origin not allowed").into_response();
+        }
+    }
+    next.run(request).await
+}
+
 // ==================== Server Setup ====================
 
 /// Start HTTP server in background
@@ -812,7 +893,18 @@ pub async fn start_server(
     barcode_manager: Arc<Mutex<BarcodePrinterManager>>,
     port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let state = Arc::new(AppState { printer_manager, barcode_manager });
+    let allowed_origins: Vec<String> = std::env::var("NEXORA_ALLOWED_ORIGINS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    log::info!(
+        "Origin guard: localhost always allowed, plus {:?}",
+        allowed_origins
+    );
+
+    let state = Arc::new(AppState { printer_manager, barcode_manager, allowed_origins });
 
     // Configure CORS for web app integration
     let cors = CorsLayer::new()
@@ -835,11 +927,12 @@ pub async fn start_server(
         // Template-based printing
         .route("/print-template", post(print_with_template))
         // Image printing
-        // .route("/print-image", post(print_image))
+        .route("/print-image", post(print_image))
+        .route("/print-raw", post(print_raw))
         .route("/test-print", post(test_print))
         // Preview (no printer needed)
         .route("/preview-template", post(preview_template))
-        // .route("/preview-image", post(preview_image))
+        .route("/preview-image", post(preview_image))
         // Cache management
         .route("/cache", delete(clear_cache))
         // Logo caching
@@ -853,6 +946,7 @@ pub async fn start_server(
         .route("/print-barcode",       post(print_barcode))
         .route("/barcode/test-print",  post(barcode_test_print))
         .layer(cors)
+        .layer(middleware::from_fn_with_state(state.clone(), origin_guard))
         .with_state(state);
 
     let addr = format!("127.0.0.1:{}", port);
@@ -862,4 +956,26 @@ pub async fn start_server(
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod origin_guard_tests {
+    use super::*;
+
+    #[test]
+    fn local_origins_are_always_allowed() {
+        assert!(is_local_origin("http://localhost:3000"));
+        assert!(is_local_origin("https://127.0.0.1:3000"));
+        assert!(is_local_origin("http://localhost"));
+        assert!(is_local_origin("http://[::1]:3000"));
+        assert!(!is_local_origin("https://evil.example.com"));
+    }
+
+    #[test]
+    fn external_origins_require_allowlist() {
+        let allowed = vec!["https://app.nexora.com".to_string()];
+        assert!(origin_allowed("https://app.nexora.com", &allowed));
+        assert!(origin_allowed("http://localhost:3000", &allowed));
+        assert!(!origin_allowed("https://evil.example.com", &allowed));
+    }
 }

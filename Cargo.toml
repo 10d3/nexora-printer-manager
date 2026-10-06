@@ -53,12 +53,14 @@ chrono = "0.4"
 
 # Regex
 regex = "1.10"
-winreg = "0.56.0"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_Graphics_Printing", "Win32_UI_WindowsAndMessaging"] }
 base64 = "0.22.1"
 simplelog = "0.12"
 # Hashing
 sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56.0"
 
 [build-dependencies]
 slint-build = "1.3"

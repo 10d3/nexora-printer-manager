@@ -856,7 +856,8 @@ mod tests {
         assert!(l.barcode_y >= margin_y, "content must start at or after top margin");
         assert!(l.text_lines.last().unwrap().y + l.font_h <= total_h, "content must end before bottom of label");
         // Padding above and below should be roughly equal (within 1 dot rounding).
-        let pad_top    = l.barcode_y - margin_y;
+        let content_top = l.text_lines.first().map(|t| t.y).unwrap_or(l.barcode_y);
+        let pad_top    = content_top - margin_y;
         let pad_bottom = printable_h.saturating_sub(content_h).saturating_sub(pad_top);
         assert!(pad_top.abs_diff(pad_bottom) <= 1,
             "vertical padding top ({}) and bottom ({}) must be equal", pad_top, pad_bottom);
