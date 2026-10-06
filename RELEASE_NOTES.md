@@ -1,3 +1,15 @@
+## Nexora Printer Manager v1.7.6
+
+### What's New
+
+- **Real QR Codes & Barcodes in Templates**: `qr` and `barcode` template elements now emit genuine ESC/POS commands (`GS ( k` for QR, `GS k` for Code128/Code39/EAN13/EAN8/UPC-A) instead of literal `[QR: ...]` / `[Barcode: ...]` placeholders.
+- **Raw ESC/POS Endpoint**: new `POST /print-raw` accepts a base64 payload and writes the bytes straight to the printer — an escape hatch for anything the template system doesn't cover.
+- **Image Endpoints Re-enabled**: `POST /print-image` and `POST /preview-image` are available again for printing and previewing standalone PNG/JPEG images.
+- **Template Condition Fix**: array conditions such as `items.length > 0` now evaluate correctly (previously always true).
+- **Origin Guard (Security)**: requests carrying a browser `Origin` that is not `localhost`, `*.localhost`, or an entry in `NEXORA_ALLOWED_ORIGINS` are rejected with `403 Origin not allowed`, protecting the loopback API from malicious local pages.
+
+### Previous Updates
+
 ## Nexora Printer Manager v1.7.0
 
 ### What's New
