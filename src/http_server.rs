@@ -864,7 +864,7 @@ fn is_local_origin(origin: &str) -> bool {
         Some((h, port)) if port.chars().all(|c| c.is_ascii_digit()) => h,
         _ => host,
     };
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]") || host.ends_with(".localhost")
 }
 
 fn origin_allowed(origin: &str, allowed: &[String]) -> bool {
@@ -968,7 +968,10 @@ mod origin_guard_tests {
         assert!(is_local_origin("https://127.0.0.1:3000"));
         assert!(is_local_origin("http://localhost"));
         assert!(is_local_origin("http://[::1]:3000"));
+        assert!(is_local_origin("http://super.localhost:3000"));
+        assert!(is_local_origin("https://salon-p.localhost:3000"));
         assert!(!is_local_origin("https://evil.example.com"));
+        assert!(!is_local_origin("https://notlocalhost.example.com"));
     }
 
     #[test]
